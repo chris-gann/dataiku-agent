@@ -1,0 +1,44 @@
+{
+  "display_information": {
+    "name": "Dataiku Agent",
+    "description": "AI assistant that answers questions about Dataiku",
+    "background_color": "#00a0e1",
+    "long_description": "A Slack-native assistant that provides accurate, up-to-date answers about Dataiku by combining web search results with AI synthesis."
+  },
+  "features": {
+    "bot_user": {
+      "display_name": "Dataiku Agent",
+      "always_online": true
+    }
+  },
+  "oauth_config": {
+    "scopes": {
+      "bot": [
+        "assistant:write",
+        "chat:write",
+        "im:history",
+        "channels:history",
+        "groups:history",
+        "mpim:history"
+      ]
+    }
+  },
+  "settings": {
+    "event_subscriptions": {
+      "bot_events": [
+        "assistant_thread_started",
+        "assistant_thread_context_changed",
+        "message.im",
+        "message.channels",
+        "message.groups",
+        "message.mpim"
+      ]
+    },
+    "interactivity": {
+      "is_enabled": false
+    },
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": true,
+    "token_rotation_enabled": false
+  }
+} 
