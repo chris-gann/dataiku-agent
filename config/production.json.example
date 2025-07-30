@@ -1,0 +1,75 @@
+{
+  "environment": "production",
+  "debug": false,
+  "log_level": "INFO",
+  "app_name": "Dataiku Agent",
+  "app_version": "1.0.0",
+  "slack": {
+    "bot_token": "${SLACK_BOT_TOKEN}",
+    "app_token": "${SLACK_APP_TOKEN}",
+    "rate_limit_per_minute": 20,
+    "rate_limit_burst": 5,
+    "socket_mode_timeout": 30,
+    "api_timeout": 10,
+    "max_retries": 3,
+    "retry_backoff_base": 2.0
+  },
+  "openai": {
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "o4-mini",
+    "reasoning_effort": "medium",
+    "max_completion_tokens": 1500,
+    "temperature": 0.3,
+    "rate_limit_per_minute": 60,
+    "max_retries": 3,
+    "retry_backoff_base": 2.0
+  },
+  "brave_search": {
+    "api_key": "${BRAVE_API_KEY}",
+    "base_url": "https://api.search.brave.com/res/v1/web/search",
+    "result_count": 10,
+    "search_timeout": 5,
+    "include_ai_summary": true,
+    "rate_limit_per_minute": 100,
+    "max_retries": 3,
+    "retry_backoff_base": 2.0
+  },
+  "cache": {
+    "enabled": true,
+    "backend": "redis",
+    "redis_url": "${REDIS_URL}",
+    "redis_ttl_seconds": 3600,
+    "max_cache_keys": 1000
+  },
+  "monitoring": {
+    "enabled": true,
+    "metrics_port": 9090,
+    "metrics_path": "/metrics",
+    "health_check_port": 8080,
+    "health_check_path": "/health",
+    "tracing_enabled": false,
+    "sentry_dsn": "${SENTRY_DSN}",
+    "sentry_environment": "production",
+    "sentry_traces_sample_rate": 0.1
+  },
+  "security": {
+    "max_message_length": 1000,
+    "allowed_channels_regex": null,
+    "blocked_users": [],
+    "enable_key_rotation": false,
+    "key_rotation_interval_days": 90,
+    "verify_slack_signatures": true,
+    "slack_signing_secret": "${SLACK_SIGNING_SECRET}"
+  },
+  "features": {
+    "enable_streaming_responses": false,
+    "enable_conversation_history": true,
+    "enable_suggested_prompts": true,
+    "enable_source_citations": true,
+    "max_sources_to_show": 3,
+    "enable_multi_language_support": false,
+    "enable_custom_knowledge_base": false
+  },
+  "data_dir": "/var/lib/dataiku-agent/data",
+  "log_dir": "/var/log/dataiku-agent"
+} 
