@@ -1,0 +1,43 @@
+# This file specifies files that are intentionally untracked by Cloud Build
+# https://cloud.google.com/cloud-build/docs/build-config
+
+# Ignore development files
+.env
+.env.*
+venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+.vscode/
+.idea/
+
+# Ignore documentation
+README.md
+*.md
+docs/
+
+# Ignore test files
+tests/
+test_*.py
+*_test.py
+
+# Ignore Git files
+.git/
+.gitignore
+
+# Ignore OS files
+.DS_Store
+Thumbs.db
+
+# Ignore deployment scripts (they're for local use)
+*.sh
+cloudbuild.yaml
+
+# Keep only the essential files for the container
+!src/
+!requirements.txt
+!manifest.json
+!Dockerfile

@@ -443,6 +443,12 @@ def handle_thread_context_changed(context: BoltContext, client: WebClient, paylo
 # Add the assistant to the app
 app.assistant(assistant)
 
+# Health check endpoint for Cloud Run
+@app.route("/health")
+def health_check():
+    """Health check endpoint for Cloud Run."""
+    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
+
 # Handle regular messages (fallback)
 @app.message("")
 def handle_message(message, say):

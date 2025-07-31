@@ -162,6 +162,36 @@ You can customize the bot by modifying:
 - **Search parameters**: Adjust Brave Search params in `search_brave()`
 - **OpenAI model**: Change the model in `synthesize_answer()` (currently using o4-mini with medium reasoning effort)
 
+## Deployment
+
+### Google Cloud Run (Recommended)
+
+**Two deployment options:**
+
+#### GitHub Integration (Recommended)
+Automatic deployments on every push to GitHub:
+
+1. Set up secrets: `./deployment/setup-secrets.sh`
+2. Connect your GitHub repo to Cloud Run in the console
+3. Push code → Auto deploy! 🚀
+
+See [deployment/GITHUB_DEPLOY.md](deployment/GITHUB_DEPLOY.md) for step-by-step instructions.
+
+### Deployment Features
+
+- 🐳 **Containerized**: Docker-based deployment
+- 🔐 **Secure secrets**: Google Secret Manager integration
+- 📊 **Monitoring**: Built-in logging and health checks
+- 💰 **Cost-effective**: Scales to zero when idle
+- 🚀 **Easy updates**: Single command redeployment
+
+### Deployment Files
+
+- `deployment/setup-secrets.sh` - Configure API keys securely
+- `deployment/GITHUB_DEPLOY.md` - GitHub integration deployment guide
+- `Dockerfile` - Container configuration
+- `cloudbuild.yaml` - Cloud Build configuration
+
 ## Development
 
 ### Running Tests
