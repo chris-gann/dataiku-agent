@@ -60,6 +60,9 @@ if not all([SLACK_BOT_TOKEN, OPENAI_API_KEY, BRAVE_API_KEY]):
 # Initialize OpenAI client
 openai_client = OpenAI(api_key=OPENAI_API_KEY)
 
+# Initialize Slack Web API client for AI Assistant methods
+slack_client = WebClient(token=SLACK_BOT_TOKEN)
+
 # Brave Search configuration
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
 BRAVE_HEADERS = {
@@ -87,6 +90,66 @@ CRITICAL FORMATTING RULES:
 - The system will automatically convert URLs to numbered clickable links
 
 Focus on being helpful, clear, and accurate in your responses about Dataiku's features, capabilities, and usage."""
+
+
+# AI Assistant API Helper Functions
+def set_assistant_status(channel_id, thread_ts, status):
+    """Set the status for an AI assistant thread."""
+    try:
+        response = slack_client.api_call(
+            "assistant.threads.setStatus",
+            json={
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "status": status
+            }
+        )
+        if not response["ok"]:
+            logger.error("Failed to set assistant status", error=response.get("error"))
+        return response
+    except Exception as e:
+        logger.error("Error setting assistant status", error=str(e))
+        return None
+
+def set_suggested_prompts(channel_id, thread_ts, prompts, title=None):
+    """Set suggested prompts for an AI assistant thread."""
+    try:
+        payload = {
+            "channel_id": channel_id,
+            "thread_ts": thread_ts,
+            "prompts": prompts
+        }
+        if title:
+            payload["title"] = title
+            
+        response = slack_client.api_call(
+            "assistant.threads.setSuggestedPrompts",
+            json=payload
+        )
+        if not response["ok"]:
+            logger.error("Failed to set suggested prompts", error=response.get("error"))
+        return response
+    except Exception as e:
+        logger.error("Error setting suggested prompts", error=str(e))
+        return None
+
+def set_thread_title(channel_id, thread_ts, title):
+    """Set the title for an AI assistant thread."""
+    try:
+        response = slack_client.api_call(
+            "assistant.threads.setTitle",
+            json={
+                "channel_id": channel_id,
+                "thread_ts": thread_ts,
+                "title": title
+            }
+        )
+        if not response["ok"]:
+            logger.error("Failed to set thread title", error=response.get("error"))
+        return response
+    except Exception as e:
+        logger.error("Error setting thread title", error=str(e))
+        return None
 
 
 def search_brave(query: str) -> List[Dict[str, Any]]:
@@ -313,8 +376,29 @@ def slack_events():
             event = event_data["event"]
             logger.info("processing_event", event_type=event.get("type"), event_data=event)
             
+            # Handle AI Assistant events
+            if event.get("type") == "assistant_thread_started":
+                logger.info("handling_assistant_thread_started", 
+                           channel_id=event.get("assistant_thread", {}).get("channel_id"))
+                # Process in background thread for fast response
+                processing_thread = threading.Thread(
+                    target=handle_assistant_thread_started_async,
+                    args=(event,),
+                    daemon=False
+                )
+                processing_thread.start()
+            elif event.get("type") == "assistant_thread_context_changed":
+                logger.info("handling_assistant_thread_context_changed",
+                           channel_id=event.get("assistant_thread", {}).get("channel_id"))
+                # Process context change (lightweight operation)
+                processing_thread = threading.Thread(
+                    target=handle_assistant_thread_context_changed_async,
+                    args=(event,),
+                    daemon=False
+                )
+                processing_thread.start()
             # Handle app mentions and direct messages
-            if event.get("type") == "app_mention":
+            elif event.get("type") == "app_mention":
                 logger.info("handling_app_mention", text=event.get("text"))
                 # Process in background thread for fast response
                 processing_thread = threading.Thread(
@@ -393,6 +477,7 @@ def handle_direct_message_async(event):
     try:
         user_query = event.get("text", "").strip()
         channel_id = event.get("channel")
+        thread_ts = event.get("thread_ts") or event.get("ts")  # Use thread_ts if available
         
         # Ignore bot messages and messages with subtypes (like message edits)
         if event.get("bot_id") or event.get("subtype"):
@@ -401,10 +486,21 @@ def handle_direct_message_async(event):
         if not user_query:
             return
             
-        logger.info("processing_direct_message", query=user_query, channel=channel_id)
+        logger.info("processing_direct_message", 
+                   query=user_query, 
+                   channel=channel_id,
+                   thread_ts=thread_ts)
+        
+        # Set status to show the assistant is working
+        if thread_ts:
+            set_assistant_status(channel_id, thread_ts, "is searching for information...")
         
         # Search and synthesize response
         search_results = search_brave(user_query)
+        
+        # Update status to show synthesis
+        if thread_ts:
+            set_assistant_status(channel_id, thread_ts, "is analyzing results...")
         
         if not search_results:
             response = "I couldn't find any relevant information about your query. Please try rephrasing your question or asking about a different aspect of Dataiku."
@@ -414,20 +510,123 @@ def handle_direct_message_async(event):
                 answer = "I found some relevant information about your query. Here are the sources I found:"
             response = format_response_with_sources(answer, search_results)
         
-        # Send response to Slack
+        # Send response to Slack (this will clear the status automatically)
         client = WebClient(token=SLACK_BOT_TOKEN)
-        client.chat_postMessage(
+        chat_response = client.chat_postMessage(
             channel=channel_id,
+            thread_ts=thread_ts,  # Ensure proper threading
             text=response,
             mrkdwn=True,
             unfurl_links=False,
             unfurl_media=False
         )
         
+        # If this is a new thread and we have AI Assistant features enabled,
+        # set a helpful title for the conversation
+        if chat_response.get("ok") and not event.get("thread_ts"):
+            # This is a new thread, set a title
+            new_thread_ts = chat_response.get("ts")
+            if new_thread_ts:
+                # Create a short title from the query
+                title = user_query[:50] + "..." if len(user_query) > 50 else user_query
+                set_thread_title(channel_id, new_thread_ts, f"Q: {title}")
+        
         logger.info("direct_message_completed", query=user_query)
         
     except Exception as e:
         logger.error("handle_direct_message_failed", error=str(e), error_type=type(e).__name__)
+        # Clear status if there was an error
+        if 'thread_ts' in locals() and thread_ts:
+            set_assistant_status(channel_id, thread_ts, "")
+
+
+def handle_assistant_thread_started_async(event):
+    """Handle assistant thread started events asynchronously."""
+    try:
+        assistant_thread = event.get("assistant_thread", {})
+        channel_id = assistant_thread.get("channel_id")
+        thread_ts = assistant_thread.get("thread_ts")
+        context = assistant_thread.get("context", {})
+        
+        if not channel_id or not thread_ts:
+            logger.error("missing_assistant_thread_data", event=event)
+            return
+            
+        logger.info("processing_assistant_thread_started", 
+                   channel_id=channel_id, 
+                   thread_ts=thread_ts,
+                   context=context)
+        
+        # Send welcome message
+        client = WebClient(token=SLACK_BOT_TOKEN)
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text="👋 Hi! I'm your Dataiku AI assistant. I can help you with questions about Dataiku's features, best practices, and troubleshooting.",
+            mrkdwn=True
+        )
+        
+        # Set suggested prompts to help users get started
+        suggested_prompts = [
+            {
+                "title": "Getting Started",
+                "message": "How do I create my first project in Dataiku?"
+            },
+            {
+                "title": "Data Preparation",
+                "message": "What are the best practices for data preparation in Dataiku?"
+            },
+            {
+                "title": "Machine Learning",
+                "message": "How do I build and deploy a machine learning model?"
+            },
+            {
+                "title": "Visual Recipes",
+                "message": "What are visual recipes and how do I use them?"
+            }
+        ]
+        
+        set_suggested_prompts(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            prompts=suggested_prompts,
+            title="Here are some things I can help you with:"
+        )
+        
+        logger.info("assistant_thread_started_completed", 
+                   channel_id=channel_id, 
+                   thread_ts=thread_ts)
+        
+    except Exception as e:
+        logger.error("handle_assistant_thread_started_failed", 
+                    error=str(e), 
+                    error_type=type(e).__name__)
+
+
+def handle_assistant_thread_context_changed_async(event):
+    """Handle assistant thread context changed events asynchronously."""
+    try:
+        assistant_thread = event.get("assistant_thread", {})
+        channel_id = assistant_thread.get("channel_id")
+        thread_ts = assistant_thread.get("thread_ts")
+        context = assistant_thread.get("context", {})
+        
+        logger.info("processing_assistant_thread_context_changed", 
+                   channel_id=channel_id, 
+                   thread_ts=thread_ts,
+                   context=context)
+        
+        # Context changes are mainly for tracking - no immediate action needed
+        # This could be used to provide channel-specific suggestions in the future
+        
+        logger.info("assistant_thread_context_changed_completed", 
+                   channel_id=channel_id, 
+                   thread_ts=thread_ts)
+        
+    except Exception as e:
+        logger.error("handle_assistant_thread_context_changed_failed", 
+                    error=str(e), 
+                    error_type=type(e).__name__)
 
 
 def run_flask_server():

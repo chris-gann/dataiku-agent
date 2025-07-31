@@ -9,6 +9,11 @@
     "bot_user": {
       "display_name": "Dataiku Agent",
       "always_online": true
+    },
+    "app_home": {
+      "home_tab_enabled": true,
+      "messages_tab_enabled": true,
+      "messages_tab_read_only_enabled": false
     }
   },
   "oauth_config": {
@@ -19,7 +24,8 @@
         "im:history",
         "channels:history",
         "groups:history",
-        "mpim:history"
+        "mpim:history",
+        "app_mentions:read"
       ]
     }
   },
@@ -29,16 +35,14 @@
         "assistant_thread_started",
         "assistant_thread_context_changed",
         "message.im",
-        "message.channels",
-        "message.groups",
-        "message.mpim"
+        "app_mention"
       ]
     },
     "interactivity": {
       "is_enabled": false
     },
     "org_deploy_enabled": false,
-    "socket_mode_enabled": true,
+    "socket_mode_enabled": false,
     "token_rotation_enabled": false
   }
 } 
