@@ -45,8 +45,9 @@ SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 
-# AI Model configuration
-# Using gpt-4o-mini for fast responses with good quality
+# AI Model configuration  
+# Using o4-mini reasoning model for better quality responses
+O4_REASONING_EFFORT = os.environ.get("O4_REASONING_EFFORT", "medium")
 
 # Validate required environment variables
 if not all([SLACK_BOT_TOKEN, SLACK_APP_TOKEN, OPENAI_API_KEY, BRAVE_API_KEY]):
@@ -184,16 +185,16 @@ Search Results:
 Please provide a helpful, accurate answer based on these search results. Include relevant URLs from the search results naturally within your response text. Format your response using Slack mrkdwn formatting for better readability."""
 
     try:
-        logger.info("calling_openai_gpt4o_mini", model="gpt-4o-mini")
+        logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=O4_REASONING_EFFORT)
         
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",  # Much faster than o4-mini reasoning model
+            model="o4-mini",  # Using OpenAI's o4-mini reasoning model
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
-            max_tokens=1500,  # gpt-4o-mini uses max_tokens (not max_completion_tokens)
-            temperature=0.1  # Low temperature for more consistent responses
+            max_completion_tokens=1500,  # o4-mini uses max_completion_tokens
+            reasoning_effort=O4_REASONING_EFFORT  # "low", "medium", or "high"
         )
         
         answer = response.choices[0].message.content
@@ -209,7 +210,7 @@ Please provide a helpful, accurate answer based on these search results. Include
         return answer
         
     except Exception as e:
-        logger.error("openai_gpt4o_mini_failed", error=str(e), query=query, error_type=type(e).__name__)
+        logger.error("openai_o4_mini_failed", error=str(e), query=query, error_type=type(e).__name__)
         return None
 
 
