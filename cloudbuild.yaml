@@ -22,7 +22,7 @@ steps:
     args: [
       'run', 'deploy', 'dataiku-agent',
       '--image', 'gcr.io/$PROJECT_ID/dataiku-agent:$COMMIT_SHA',
-      '--region', 'us-central1',
+      '--region', 'us-west1',
       '--platform', 'managed',
       '--allow-unauthenticated',
       '--memory', '512Mi',
@@ -32,7 +32,14 @@ steps:
       '--timeout', '900',
       '--port', '8080',
       '--set-env-vars', 'LOG_LEVEL=INFO',
-      '--set-secrets', 'SLACK_BOT_TOKEN=slack-bot-token:latest,SLACK_APP_TOKEN=slack-app-token:latest,OPENAI_API_KEY=openai-api-key:latest,BRAVE_API_KEY=brave-api-key:latest'
+      '--set-secrets', 
+      'SLACK_BOT_TOKEN=slack-bot-token:latest',
+      '--set-secrets',
+      'SLACK_APP_TOKEN=slack-app-token:latest', 
+      '--set-secrets',
+      'OPENAI_API_KEY=openai-api-key:latest',
+      '--set-secrets', 
+      'BRAVE_API_KEY=brave-api-key:latest'
     ]
 
 # Images to build and push
