@@ -47,7 +47,7 @@ BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 
 # AI Model configuration  
 # Using o4-mini reasoning model for better quality responses
-O4_REASONING_EFFORT = os.environ.get("O4_REASONING_EFFORT", "medium")
+REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "medium")
 
 # Validate required environment variables
 if not all([SLACK_BOT_TOKEN, SLACK_APP_TOKEN, OPENAI_API_KEY, BRAVE_API_KEY]):
@@ -185,7 +185,7 @@ Search Results:
 Please provide a helpful, accurate answer based on these search results. Include relevant URLs from the search results naturally within your response text. Format your response using Slack mrkdwn formatting for better readability."""
 
     try:
-        logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=O4_REASONING_EFFORT)
+        logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=REASONING_EFFORT)
         
         response = openai_client.chat.completions.create(
             model="o4-mini",  # Using OpenAI's o4-mini reasoning model
@@ -194,7 +194,7 @@ Please provide a helpful, accurate answer based on these search results. Include
                 {"role": "user", "content": user_message}
             ],
             max_completion_tokens=1500,  # o4-mini uses max_completion_tokens
-            reasoning_effort=O4_REASONING_EFFORT  # "low", "medium", or "high"
+            reasoning_effort=REASONING_EFFORT  # "low", "medium", or "high"
         )
         
         answer = response.choices[0].message.content
