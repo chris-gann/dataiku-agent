@@ -45,9 +45,8 @@ SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 
-# o4-mini reasoning effort level: "low", "medium", or "high"
-# Higher effort = better reasoning but higher cost and latency
-O3_REASONING_EFFORT = os.environ.get("O3_REASONING_EFFORT", "medium")
+# AI Model configuration
+# Using gpt-4o-mini for fast responses with good quality
 
 # Validate required environment variables
 if not all([SLACK_BOT_TOKEN, SLACK_APP_TOKEN, OPENAI_API_KEY, BRAVE_API_KEY]):
@@ -114,7 +113,7 @@ def search_brave(query: str) -> List[Dict[str, Any]]:
     try:
         params = {
             "q": f"{query} Dataiku",  # Add Dataiku to focus results
-            "count": 10,
+            "count": 5,  # Reduced from 10 to 5 for faster processing
             "source": "web",
             "ai": "true"
         }
@@ -131,7 +130,7 @@ def search_brave(query: str) -> List[Dict[str, Any]]:
         results = []
         
         # Extract web results
-        for result in data.get("web", {}).get("results", [])[:10]:
+        for result in data.get("web", {}).get("results", [])[:5]:
             results.append({
                 "title": result.get("title", ""),
                 "snippet": result.get("description", ""),
@@ -185,17 +184,16 @@ Search Results:
 Please provide a helpful, accurate answer based on these search results. Include relevant URLs from the search results naturally within your response text. Format your response using Slack mrkdwn formatting for better readability."""
 
     try:
-        logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=O3_REASONING_EFFORT)
+        logger.info("calling_openai_gpt4o_mini", model="gpt-4o-mini")
         
         response = openai_client.chat.completions.create(
-            model="o4-mini",  # Using OpenAI's o4-mini reasoning model
+            model="gpt-4o-mini",  # Much faster than o4-mini reasoning model
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": user_message}
             ],
-            max_completion_tokens=1500,  # o4-mini uses max_completion_tokens like o3
-            # o4-mini supports reasoning effort levels: low, medium, high
-            reasoning_effort=O3_REASONING_EFFORT
+            max_tokens=1500,  # gpt-4o-mini uses max_tokens (not max_completion_tokens)
+            temperature=0.1  # Low temperature for more consistent responses
         )
         
         answer = response.choices[0].message.content
@@ -211,7 +209,7 @@ Please provide a helpful, accurate answer based on these search results. Include
         return answer
         
     except Exception as e:
-        logger.error("openai_o4_mini_failed", error=str(e), query=query, error_type=type(e).__name__)
+        logger.error("openai_gpt4o_mini_failed", error=str(e), query=query, error_type=type(e).__name__)
         return None
 
 
