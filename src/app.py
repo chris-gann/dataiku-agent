@@ -485,16 +485,40 @@ def root():
 
 def run_flask_server():
     """Run Flask server for Cloud Run HTTP requirements."""
-    port = int(os.environ.get("PORT", 8080))
-    logger.info("starting_http_server", port=port)
-    flask_app.run(host="0.0.0.0", port=port, debug=False)
+    try:
+        port = int(os.environ.get("PORT", 8080))
+        logger.info("starting_http_server", port=port, host="0.0.0.0")
+        
+        # Use a production WSGI server instead of Flask's dev server
+        from werkzeug.serving import make_server
+        server = make_server("0.0.0.0", port, flask_app)
+        logger.info("flask_server_ready", port=port)
+        server.serve_forever()
+        
+    except Exception as e:
+        logger.error("flask_server_failed", error=str(e), error_type=type(e).__name__)
+        raise
 
 
 def run_socket_mode():
     """Run Slack Socket Mode handler."""
-    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
-    logger.info("starting_socket_mode_handler")
-    handler.start()
+    try:
+        logger.info("creating_socket_mode_handler")
+        handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+        logger.info("starting_socket_mode_handler")
+        handler.start()
+    except Exception as e:
+        logger.error("socket_mode_failed", error=str(e), error_type=type(e).__name__)
+        # Don't crash the whole app if Socket Mode fails
+        import time
+        while True:
+            logger.info("socket_mode_retry_waiting")
+            time.sleep(30)
+            try:
+                handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+                handler.start()
+            except Exception as retry_error:
+                logger.error("socket_mode_retry_failed", error=str(retry_error))
 
 
 def main():
@@ -503,13 +527,17 @@ def main():
                 bot_token_present=bool(SLACK_BOT_TOKEN),
                 app_token_present=bool(SLACK_APP_TOKEN))
     
-    # Start Flask server in a separate thread for Cloud Run
-    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
-    flask_thread.start()
+    # Start Socket Mode in a separate thread (non-daemon so it keeps running)
+    socket_thread = threading.Thread(target=run_socket_mode, daemon=False)
+    socket_thread.start()
     
-    # Start Socket Mode handler (this blocks)
-    logger.info("dataiku_agent_ready")
-    run_socket_mode()
+    # Give Socket Mode a moment to initialize
+    import time
+    time.sleep(2)
+    
+    # Run Flask server in main thread (Cloud Run needs this to be responsive)
+    logger.info("dataiku_agent_starting_flask")
+    run_flask_server()
 
 
 if __name__ == "__main__":
