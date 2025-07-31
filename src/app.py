@@ -298,7 +298,10 @@ def slack_events():
     """Handle Slack events via HTTP webhooks (replaces Socket Mode)."""
     try:
         event_data = request.json
-        logger.info("received_slack_event", event_data=event_data)
+        logger.info("received_slack_event", 
+                   event_type=event_data.get("type") if event_data else "no_data",
+                   has_event=bool(event_data and event_data.get("event")),
+                   event_subtype=event_data.get("event", {}).get("type") if event_data and event_data.get("event") else "none")
         
         # Slack sends URL verification challenges
         if event_data and event_data.get("type") == "url_verification":
@@ -310,7 +313,7 @@ def slack_events():
             event = event_data["event"]
             logger.info("processing_event", event_type=event.get("type"), event_data=event)
             
-            # Handle app mentions
+            # Handle app mentions and direct messages
             if event.get("type") == "app_mention":
                 logger.info("handling_app_mention", text=event.get("text"))
                 # Process in background thread for fast response
@@ -320,8 +323,20 @@ def slack_events():
                     daemon=False
                 )
                 processing_thread.start()
+            elif event.get("type") == "message" and event.get("channel_type") == "im":
+                logger.info("handling_direct_message", text=event.get("text"))
+                # Process direct messages in background thread
+                processing_thread = threading.Thread(
+                    target=handle_direct_message_async,
+                    args=(event,),
+                    daemon=False
+                )
+                processing_thread.start()
             else:
-                logger.info("ignoring_event_type", event_type=event.get("type"))
+                logger.info("ignoring_event_type", 
+                           event_type=event.get("type"),
+                           channel_type=event.get("channel_type"),
+                           subtype=event.get("subtype"))
         
         # Return 200 immediately (required by Slack)
         return "", 200
@@ -371,6 +386,48 @@ def handle_app_mention_async(event):
         
     except Exception as e:
         logger.error("handle_app_mention_failed", error=str(e), error_type=type(e).__name__)
+
+
+def handle_direct_message_async(event):
+    """Handle direct message events asynchronously."""
+    try:
+        user_query = event.get("text", "").strip()
+        channel_id = event.get("channel")
+        
+        # Ignore bot messages and messages with subtypes (like message edits)
+        if event.get("bot_id") or event.get("subtype"):
+            return
+            
+        if not user_query:
+            return
+            
+        logger.info("processing_direct_message", query=user_query, channel=channel_id)
+        
+        # Search and synthesize response
+        search_results = search_brave(user_query)
+        
+        if not search_results:
+            response = "I couldn't find any relevant information about your query. Please try rephrasing your question or asking about a different aspect of Dataiku."
+        else:
+            answer = synthesize_answer(user_query, search_results)
+            if not answer or len(answer.strip()) == 0:
+                answer = "I found some relevant information about your query. Here are the sources I found:"
+            response = format_response_with_sources(answer, search_results)
+        
+        # Send response to Slack
+        client = WebClient(token=SLACK_BOT_TOKEN)
+        client.chat_postMessage(
+            channel=channel_id,
+            text=response,
+            mrkdwn=True,
+            unfurl_links=False,
+            unfurl_media=False
+        )
+        
+        logger.info("direct_message_completed", query=user_query)
+        
+    except Exception as e:
+        logger.error("handle_direct_message_failed", error=str(e), error_type=type(e).__name__)
 
 
 def run_flask_server():
