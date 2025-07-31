@@ -306,14 +306,114 @@ def handle_thread_started(context: BoltContext, client: WebClient, payload: dict
         logger.error("failed_to_set_suggested_prompts", error=str(e))
 
 
+def process_message_async(user_query: str, channel_id: str, thread_ts: str, client: WebClient):
+    """
+    Process the user message asynchronously in a background thread.
+    This allows Slack to respond immediately while we do the heavy work.
+    """
+    start_time = time.time()
+    
+    try:
+        logger.info("async_processing_started", query=user_query, channel=channel_id)
+        
+        # Set status to "Searching the web..."
+        client.assistant_threads_setStatus(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            status="Searching the web..."
+        )
+        
+        # Search Brave
+        search_results = search_brave(user_query)
+        
+        if not search_results:
+            # No results found
+            response = "I couldn't find any relevant information about your query. Please try rephrasing your question or asking about a different aspect of Dataiku."
+        else:
+            # Update status
+            client.assistant_threads_setStatus(
+                channel_id=channel_id,
+                thread_ts=thread_ts,
+                status="Analyzing results..."
+            )
+            
+            # Synthesize answer with better error handling
+            answer = synthesize_answer(user_query, search_results)
+            
+            # Ensure we have an answer
+            if not answer or len(answer.strip()) == 0:
+                logger.warning("empty_answer_from_synthesis")
+                answer = "I found some relevant information about your query. Here are the sources I found:"
+            
+            # Format with sources
+            response = format_response_with_sources(answer, search_results)
+        
+        # Post the response
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=response,
+            mrkdwn=True,
+            unfurl_links=False,  # Disable automatic link previews
+            unfurl_media=False   # Disable automatic media previews
+        )
+        
+        # Clear status
+        client.assistant_threads_setStatus(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            status=""
+        )
+        
+        # Log success
+        logger.info(
+            "async_query_completed",
+            query=user_query,
+            total_duration_ms=int((time.time() - start_time) * 1000),
+            result_count=len(search_results) if search_results else 0
+        )
+        
+    except requests.exceptions.RequestException as e:
+        # Brave API error
+        logger.error("async_brave_api_error", error=str(e), query=user_query)
+        error_msg = "I'm having trouble searching the web right now. Please try again in a moment."
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=error_msg,
+            unfurl_links=False,
+            unfurl_media=False
+        )
+        client.assistant_threads_setStatus(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            status=""
+        )
+        
+    except Exception as e:
+        # OpenAI or other error
+        logger.error("async_processing_failed", error=str(e), query=user_query, error_type=type(e).__name__)
+        error_msg = "I encountered an error while processing your request. Please try again."
+        client.chat_postMessage(
+            channel=channel_id,
+            thread_ts=thread_ts,
+            text=error_msg,
+            unfurl_links=False,
+            unfurl_media=False
+        )
+        client.assistant_threads_setStatus(
+            channel_id=channel_id,
+            thread_ts=thread_ts,
+            status=""
+        )
+
+
 @assistant.user_message
 def handle_user_message(message, context: BoltContext, client: WebClient):
     """
     Handle user messages in assistant threads.
-    This is where we process user messages and generate responses.
+    Immediately acknowledges the message and processes asynchronously.
     """
-    start_time = time.time()
-    
     try:
         user_query = message.get("text", "").strip()
         channel_id = message.get("channel")
@@ -323,101 +423,23 @@ def handle_user_message(message, context: BoltContext, client: WebClient):
             logger.warning("empty_user_query", message=message)
             return
             
-        logger.info("processing_user_message", query=user_query, channel=channel_id)
+        logger.info("message_received", query=user_query, channel=channel_id)
         
-        # Set status to "Searching the web..."
-        client.assistant_threads_setStatus(
-            channel_id=channel_id,
-            thread_ts=thread_ts,
-            status="Searching the web..."
+        # Start processing in background thread (daemon=False to ensure completion)
+        processing_thread = threading.Thread(
+            target=process_message_async,
+            args=(user_query, channel_id, thread_ts, client),
+            daemon=False
         )
+        processing_thread.start()
         
-        try:
-            # Search Brave
-            search_results = search_brave(user_query)
-            
-            if not search_results:
-                # No results found
-                response = "I couldn't find any relevant information about your query. Please try rephrasing your question or asking about a different aspect of Dataiku."
-            else:
-                # Update status
-                client.assistant_threads_setStatus(
-                    channel_id=channel_id,
-                    thread_ts=thread_ts,
-                    status="Analyzing results..."
-                )
-                
-                # Synthesize answer with better error handling
-                answer = synthesize_answer(user_query, search_results)
-                
-                # Ensure we have an answer
-                if not answer or len(answer.strip()) == 0:
-                    logger.warning("empty_answer_from_synthesis")
-                    answer = "I found some relevant information about your query. Here are the sources I found:"
-                
-                # Format with sources
-                response = format_response_with_sources(answer, search_results)
-            
-            # Post the response
-            client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=response,
-                mrkdwn=True,
-                unfurl_links=False,  # Disable automatic link previews
-                unfurl_media=False   # Disable automatic media previews
-            )
-            
-            # Clear status
-            client.assistant_threads_setStatus(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                status=""
-            )
-            
-            # Log success
-            logger.info(
-                "query_processed",
-                query=user_query,
-                total_duration_ms=int((time.time() - start_time) * 1000),
-                result_count=len(search_results) if search_results else 0
-            )
-            
-        except requests.exceptions.RequestException:
-            # Brave API error
-            error_msg = "I'm having trouble searching the web right now. Please try again in a moment."
-            client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=error_msg,
-                unfurl_links=False,
-                unfurl_media=False
-            )
-            client.assistant_threads_setStatus(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                status=""
-            )
-            
-        except Exception as e:
-            # OpenAI or other error
-            logger.error("query_processing_failed", error=str(e), query=user_query)
-            error_msg = "I encountered an error while processing your request. Please try again."
-            client.chat_postMessage(
-                channel=channel_id,
-                thread_ts=thread_ts,
-                text=error_msg,
-                unfurl_links=False,
-                unfurl_media=False
-            )
-            client.assistant_threads_setStatus(
-                channel_id=channel_id,
-                thread_ts=thread_ts,
-                status=""
-            )
-            
+        # Return immediately so Slack gets quick acknowledgment
+        logger.info("message_queued_for_processing", query=user_query)
+        
     except SlackApiError as e:
         logger.error("slack_api_error", error=str(e))
+    except Exception as e:
+        logger.error("message_handler_error", error=str(e), error_type=type(e).__name__)
 
 
 @assistant.thread_context_changed
