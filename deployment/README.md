@@ -49,4 +49,4 @@ This includes:
 - `cloudbuild.yaml` - Cloud Build pipeline configuration  
 - `.gcloudignore` - Files to exclude from builds
 
-These files must remain in the root directory for Cloud Build to find them.
+These files must remain in the root directory for Cloud Build to find them.# Deployment with secrets configured Wed Jul 30 22:40:28 EDT 2025
