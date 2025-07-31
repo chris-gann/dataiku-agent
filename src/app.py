@@ -3,6 +3,7 @@ import logging
 import time
 import json
 import re
+import threading
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 
@@ -14,6 +15,7 @@ from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
 import structlog
+from flask import Flask, jsonify
 
 # Load environment variables
 load_dotenv()
@@ -443,12 +445,6 @@ def handle_thread_context_changed(context: BoltContext, client: WebClient, paylo
 # Add the assistant to the app
 app.assistant(assistant)
 
-# Health check endpoint for Cloud Run
-@app.route("/health")
-def health_check():
-    """Health check endpoint for Cloud Run."""
-    return {"status": "healthy", "timestamp": datetime.now().isoformat()}
-
 # Handle regular messages (fallback)
 @app.message("")
 def handle_message(message, say):
@@ -465,17 +461,55 @@ def handle_message(message, say):
         )
 
 
+# Create Flask app for Cloud Run HTTP requirements
+flask_app = Flask(__name__)
+
+@flask_app.route("/health")
+def health_check():
+    """Health check endpoint for Cloud Run."""
+    return jsonify({
+        "status": "healthy", 
+        "timestamp": datetime.now().isoformat(),
+        "service": "dataiku-agent"
+    })
+
+@flask_app.route("/")
+def root():
+    """Root endpoint for Cloud Run."""
+    return jsonify({
+        "message": "Dataiku Agent is running",
+        "status": "active",
+        "timestamp": datetime.now().isoformat()
+    })
+
+
+def run_flask_server():
+    """Run Flask server for Cloud Run HTTP requirements."""
+    port = int(os.environ.get("PORT", 8080))
+    logger.info("starting_http_server", port=port)
+    flask_app.run(host="0.0.0.0", port=port, debug=False)
+
+
+def run_socket_mode():
+    """Run Slack Socket Mode handler."""
+    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    logger.info("starting_socket_mode_handler")
+    handler.start()
+
+
 def main():
     """Main entry point for the application."""
     logger.info("starting_dataiku_agent", 
                 bot_token_present=bool(SLACK_BOT_TOKEN),
                 app_token_present=bool(SLACK_APP_TOKEN))
     
-    # Start the app with Socket Mode
-    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+    # Start Flask server in a separate thread for Cloud Run
+    flask_thread = threading.Thread(target=run_flask_server, daemon=True)
+    flask_thread.start()
     
+    # Start Socket Mode handler (this blocks)
     logger.info("dataiku_agent_ready")
-    handler.start()
+    run_socket_mode()
 
 
 if __name__ == "__main__":

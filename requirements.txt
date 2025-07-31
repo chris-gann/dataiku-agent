@@ -6,6 +6,9 @@ slack-sdk>=3.27.1
 openai>=1.55.3
 requests==2.31.0
 
+# Web server for Cloud Run
+flask>=2.0.0
+
 # Environment and utilities
 python-dotenv==1.0.1
 aiohttp==3.9.5
