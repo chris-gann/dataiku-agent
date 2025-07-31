@@ -4,15 +4,11 @@ steps:
   - name: 'gcr.io/cloud-builders/docker'
     args: [
       'build',
-      '-t', 'gcr.io/$PROJECT_ID/dataiku-agent:$COMMIT_SHA',
       '-t', 'gcr.io/$PROJECT_ID/dataiku-agent:latest',
       '.'
     ]
   
   # Push the Docker image to Google Container Registry
-  - name: 'gcr.io/cloud-builders/docker'
-    args: ['push', 'gcr.io/$PROJECT_ID/dataiku-agent:$COMMIT_SHA']
-  
   - name: 'gcr.io/cloud-builders/docker'
     args: ['push', 'gcr.io/$PROJECT_ID/dataiku-agent:latest']
   
@@ -21,7 +17,7 @@ steps:
     entrypoint: 'gcloud'
     args: [
       'run', 'deploy', 'dataiku-agent',
-      '--image', 'gcr.io/$PROJECT_ID/dataiku-agent:$COMMIT_SHA',
+      '--image', 'gcr.io/$PROJECT_ID/dataiku-agent:latest',
       '--region', 'us-west1',
       '--platform', 'managed',
       '--allow-unauthenticated',
@@ -38,7 +34,6 @@ steps:
 
 # Images to build and push
 images:
-  - 'gcr.io/$PROJECT_ID/dataiku-agent:$COMMIT_SHA'
   - 'gcr.io/$PROJECT_ID/dataiku-agent:latest'
 
 # Options
