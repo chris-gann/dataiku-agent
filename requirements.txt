@@ -1,5 +1,4 @@
-# Slack SDK and Bolt Framework
-slack-bolt>=1.20.0
+# Slack SDK for HTTP webhooks (no longer need Bolt framework)
 slack-sdk>=3.27.1
 
 # External API clients
@@ -16,5 +15,4 @@ aiohttp==3.9.5
 # Logging
 structlog==24.1.0
 
-# Additional dependency for Slack Assistant features
-websocket-client 
+# HTTP mode - no longer need websocket-client 
