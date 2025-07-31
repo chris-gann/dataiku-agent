@@ -39,11 +39,11 @@ structlog.configure(
 
 logger = structlog.get_logger()
 
-# Configuration
-SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN")
-SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN")
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
-BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY")
+# Configuration (strip whitespace from secrets)
+SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
+SLACK_APP_TOKEN = os.environ.get("SLACK_APP_TOKEN", "").strip()
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 
 # o4-mini reasoning effort level: "low", "medium", or "high"
 # Higher effort = better reasoning but higher cost and latency
