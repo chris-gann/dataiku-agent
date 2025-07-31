@@ -297,17 +297,22 @@ def root():
 def slack_events():
     """Handle Slack events via HTTP webhooks (replaces Socket Mode)."""
     try:
+        event_data = request.json
+        logger.info("received_slack_event", event_data=event_data)
+        
         # Slack sends URL verification challenges
-        if request.json and request.json.get("type") == "url_verification":
-            return jsonify({"challenge": request.json.get("challenge")})
+        if event_data and event_data.get("type") == "url_verification":
+            logger.info("handling_url_verification")
+            return jsonify({"challenge": event_data.get("challenge")})
         
         # Process the event asynchronously 
-        event_data = request.json
         if event_data and event_data.get("event"):
             event = event_data["event"]
+            logger.info("processing_event", event_type=event.get("type"), event_data=event)
             
             # Handle app mentions
             if event.get("type") == "app_mention":
+                logger.info("handling_app_mention", text=event.get("text"))
                 # Process in background thread for fast response
                 processing_thread = threading.Thread(
                     target=handle_app_mention_async,
@@ -315,6 +320,8 @@ def slack_events():
                     daemon=False
                 )
                 processing_thread.start()
+            else:
+                logger.info("ignoring_event_type", event_type=event.get("type"))
         
         # Return 200 immediately (required by Slack)
         return "", 200
