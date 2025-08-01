@@ -85,10 +85,10 @@ Format your response using Slack's mrkdwn formatting:
 - Keep paragraphs short and scannable
 
 CRITICAL URL RULES:
-- ALWAYS include complete URLs from search results (full https://domain.com/path format)
-- NEVER create numbered references like [1], [2] - the system handles numbering automatically
-- NEVER use partial URLs or relative paths - always use complete URLs from the search results
-- Write URLs naturally in your text, like: "Check out https://doc.dataiku.com/getting-started"
+- When referencing URLs, you can use numbered references like [1], [2] which will be converted to clickable links
+- ALWAYS use complete URLs from the search results (full https://domain.com/path format)
+- NEVER use partial URLs or relative paths - always complete URLs
+- You can write either "Check out https://doc.dataiku.com" OR "Check out [1]" (if URL 1 is https://doc.dataiku.com)
 - For bold text, use *single asterisks* NOT **double asterisks**
 
 Focus on being helpful, clear, and accurate in your responses about Dataiku's features, capabilities, and usage."""
@@ -404,10 +404,10 @@ Search Results:
 Please provide a helpful, accurate answer based on these search results. 
 
 IMPORTANT URL INSTRUCTIONS:
-- When referencing URLs from the search results, include the COMPLETE URL (like https://doc.dataiku.com/dss/latest/getting-started/)
-- Write URLs naturally in your text, NOT as numbered references
-- Use the exact URLs from the search results above
-- Do NOT create [1], [2] style references - the system will handle numbering
+- When referencing URLs from the search results, you can use either complete URLs OR numbered references like [1], [2]
+- If using numbered references, make sure they correspond to actual URLs from the search results above
+- NEVER use partial URLs like "dataiku.com/product/" - always use complete URLs from search results
+- Numbered references will be automatically converted to clickable Slack hyperlinks
 
 Format your response using Slack mrkdwn formatting for better readability."""
 
@@ -459,10 +459,7 @@ def format_urls_as_numbered_links(text: str) -> str:
     urls = re.findall(url_pattern, text)
     
     if not urls:
-        # Also check for and remove any stray numbered references like [1], [2] without URLs
-        # These might be left over from AI responses
-        cleaned_text = re.sub(r'\s*\[[0-9]+\]\s*(?!/)', '', text)
-        return cleaned_text
+        return text
     
     # Remove duplicates while preserving order
     seen = set()
@@ -480,8 +477,42 @@ def format_urls_as_numbered_links(text: str) -> str:
         # Replace all occurrences of this URL
         result = result.replace(url, slack_link)
     
-    # Clean up any remaining orphaned numbered references
-    result = re.sub(r'\s*\[[0-9]+\]\s*(?!/)', '', result)
+    return result
+
+
+def convert_numbered_refs_to_links(text: str, search_results: List[Dict[str, Any]]) -> str:
+    """
+    Convert numbered references like [1], [2] to proper Slack hyperlinks using search results.
+    
+    Args:
+        text: Text containing numbered references
+        search_results: List of search results with URLs
+        
+    Returns:
+        Text with numbered references converted to Slack hyperlinks
+    """
+    if not search_results:
+        return text
+    
+    # Create mapping of numbers to URLs
+    url_map = {}
+    for i, result in enumerate(search_results, 1):
+        url = result.get('url', '')
+        if url:
+            url_map[i] = url
+    
+    # Pattern to find numbered references like [1], [2], etc.
+    def replace_numbered_ref(match):
+        ref_num = int(match.group(1))
+        if ref_num in url_map:
+            url = url_map[ref_num]
+            return f"<{url}|[{ref_num}]>"
+        else:
+            # Keep the original reference if no URL found
+            return match.group(0)
+    
+    # Replace numbered references with Slack hyperlinks
+    result = re.sub(r'\[(\d+)\]', replace_numbered_ref, text)
     
     return result
 
@@ -492,7 +523,7 @@ def format_response_with_sources(answer: str, search_results: List[Dict[str, Any
     
     Args:
         answer: The synthesized answer
-        search_results: The search results (not used but kept for compatibility)
+        search_results: The search results to map numbered references to actual URLs
         
     Returns:
         Slack-formatted answer with numbered URL links
@@ -504,7 +535,10 @@ def format_response_with_sources(answer: str, search_results: List[Dict[str, Any
     # Replace **text** with *text* (but not if already single asterisks)
     formatted_answer = re.sub(r'\*\*([^\*]+?)\*\*', r'*\1*', answer)
     
-    # Format URLs as numbered links
+    # Convert numbered references to proper Slack hyperlinks using search results
+    formatted_answer = convert_numbered_refs_to_links(formatted_answer, search_results)
+    
+    # Also handle any remaining plain URLs
     formatted_answer = format_urls_as_numbered_links(formatted_answer)
     
     return formatted_answer
