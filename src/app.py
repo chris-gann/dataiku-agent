@@ -84,10 +84,12 @@ Format your response using Slack's mrkdwn formatting:
 - Use > for quotes or important notes
 - Keep paragraphs short and scannable
 
-CRITICAL FORMATTING RULES:
+CRITICAL URL RULES:
+- ALWAYS include complete URLs from search results (full https://domain.com/path format)
+- NEVER create numbered references like [1], [2] - the system handles numbering automatically
+- NEVER use partial URLs or relative paths - always use complete URLs from the search results
+- Write URLs naturally in your text, like: "Check out https://doc.dataiku.com/getting-started"
 - For bold text, use *single asterisks* NOT **double asterisks**
-- When including URLs, write them as plain URLs (like https://example.com) - do NOT format them as links
-- The system will automatically convert URLs to numbered clickable links
 
 Focus on being helpful, clear, and accurate in your responses about Dataiku's features, capabilities, and usage."""
 
@@ -399,7 +401,15 @@ def synthesize_answer(query: str, search_results: List[Dict[str, Any]]) -> str:
 Search Results:
 {context}
 
-Please provide a helpful, accurate answer based on these search results. Include relevant URLs from the search results naturally within your response text. Format your response using Slack mrkdwn formatting for better readability."""
+Please provide a helpful, accurate answer based on these search results. 
+
+IMPORTANT URL INSTRUCTIONS:
+- When referencing URLs from the search results, include the COMPLETE URL (like https://doc.dataiku.com/dss/latest/getting-started/)
+- Write URLs naturally in your text, NOT as numbered references
+- Use the exact URLs from the search results above
+- Do NOT create [1], [2] style references - the system will handle numbering
+
+Format your response using Slack mrkdwn formatting for better readability."""
 
     try:
         logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=REASONING_EFFORT)
@@ -441,15 +451,18 @@ def format_urls_as_numbered_links(text: str) -> str:
     Returns:
         Text with URLs replaced by numbered links like [1], [2], etc.
     """
-    # Pattern to match plain URLs (not already in Slack format)
+    # Enhanced pattern to match complete URLs (not already in Slack format)
     # This pattern avoids matching URLs that are already in <URL|text> format
-    url_pattern = r'(?<!<)https?://[^\s<>"\'`|]+[^\s<>"\'`|.,!?;)](?!\|)'
+    url_pattern = r'(?<!<)https?://[^\s<>"\'`|]+(?:\.[a-zA-Z]{2,}|:[0-9]+)[^\s<>"\'`|]*[^\s<>"\'`|.,!?;)](?!\|)'
     
     # Find all URLs
     urls = re.findall(url_pattern, text)
     
     if not urls:
-        return text
+        # Also check for and remove any stray numbered references like [1], [2] without URLs
+        # These might be left over from AI responses
+        cleaned_text = re.sub(r'\s*\[[0-9]+\]\s*(?!/)', '', text)
+        return cleaned_text
     
     # Remove duplicates while preserving order
     seen = set()
@@ -466,6 +479,9 @@ def format_urls_as_numbered_links(text: str) -> str:
         slack_link = f"<{url}|[{i}]>"
         # Replace all occurrences of this URL
         result = result.replace(url, slack_link)
+    
+    # Clean up any remaining orphaned numbered references
+    result = re.sub(r'\s*\[[0-9]+\]\s*(?!/)', '', result)
     
     return result
 
