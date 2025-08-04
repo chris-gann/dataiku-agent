@@ -4,38 +4,63 @@ import time
 import json
 import re
 import threading
+import asyncio
+import queue
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
-from openai import OpenAI
-from slack_sdk import WebClient
-from slack_sdk.errors import SlackApiError
 from dotenv import load_dotenv
-import structlog
 from flask import Flask, jsonify, request
+
+# Global variables for lazy-loaded clients
+_openai_client = None
+_slack_client = None
+_structlog_configured = False
+
+# Lazy loading functions for heavy imports
+def get_openai_client():
+    global _openai_client
+    if _openai_client is None:
+        from openai import OpenAI
+        _openai_client = OpenAI(api_key=OPENAI_API_KEY)
+    return _openai_client
+
+def get_slack_client():
+    global _slack_client
+    if _slack_client is None:
+        from slack_sdk import WebClient
+        _slack_client = WebClient(token=SLACK_BOT_TOKEN)
+    return _slack_client
+
+def configure_structlog():
+    global _structlog_configured
+    if not _structlog_configured:
+        import structlog
+        structlog.configure(
+            processors=[
+                structlog.stdlib.filter_by_level,
+                structlog.stdlib.add_logger_name,
+                structlog.stdlib.add_log_level,
+                structlog.stdlib.PositionalArgumentsFormatter(),
+                structlog.processors.TimeStamper(fmt="iso"),
+                structlog.processors.StackInfoRenderer(),
+                structlog.processors.format_exc_info,
+                structlog.dev.ConsoleRenderer()
+            ],
+            context_class=dict,
+            logger_factory=structlog.stdlib.LoggerFactory(),
+            cache_logger_on_first_use=True,
+        )
+        _structlog_configured = True
+    return structlog.get_logger()
 
 # Load environment variables
 load_dotenv()
 
-# Configure structured logging
-structlog.configure(
-    processors=[
-        structlog.stdlib.filter_by_level,
-        structlog.stdlib.add_logger_name,
-        structlog.stdlib.add_log_level,
-        structlog.stdlib.PositionalArgumentsFormatter(),
-        structlog.processors.TimeStamper(fmt="iso"),
-        structlog.processors.StackInfoRenderer(),
-        structlog.processors.format_exc_info,
-        structlog.dev.ConsoleRenderer()
-    ],
-    context_class=dict,
-    logger_factory=structlog.stdlib.LoggerFactory(),
-    cache_logger_on_first_use=True,
-)
-
-logger = structlog.get_logger()
+# Configure structured logging (lazy)
+logger = configure_structlog()
 
 # Configuration (strip whitespace from secrets)
 SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
@@ -57,11 +82,7 @@ if not all([SLACK_BOT_TOKEN, OPENAI_API_KEY, BRAVE_API_KEY]):
 
 # HTTP mode - no longer need Slack Bolt app
 
-# Initialize OpenAI client
-openai_client = OpenAI(api_key=OPENAI_API_KEY)
-
-# Initialize Slack Web API client for AI Assistant methods
-slack_client = WebClient(token=SLACK_BOT_TOKEN)
+# Clients will be initialized lazily when first used
 
 # Brave Search configuration
 BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
@@ -98,6 +119,7 @@ Focus on being helpful, clear, and accurate in your responses about Dataiku's fe
 def set_assistant_status(channel_id, thread_ts, status):
     """Set the status for an AI assistant thread."""
     try:
+        slack_client = get_slack_client()
         response = slack_client.api_call(
             "assistant.threads.setStatus",
             json={
@@ -124,6 +146,7 @@ def set_suggested_prompts(channel_id, thread_ts, prompts, title=None):
         if title:
             payload["title"] = title
             
+        slack_client = get_slack_client()
         response = slack_client.api_call(
             "assistant.threads.setSuggestedPrompts",
             json=payload
@@ -138,6 +161,7 @@ def set_suggested_prompts(channel_id, thread_ts, prompts, title=None):
 def set_thread_title(channel_id, thread_ts, title):
     """Set the title for an AI assistant thread."""
     try:
+        slack_client = get_slack_client()
         response = slack_client.api_call(
             "assistant.threads.setTitle",
             json={
@@ -315,21 +339,27 @@ I'm having trouble searching for specific information about your query right now
 Please try asking again in a few minutes, or contact your Dataiku administrator if this is urgent."""
 
 
-def search_brave(query: str) -> List[Dict[str, Any]]:
+def search_brave(query: str, retry_count: int = 0) -> List[Dict[str, Any]]:
     """
     Search Brave for the given query and return top results.
     
     Args:
         query: The search query
+        retry_count: Current retry attempt (for internal use)
         
     Returns:
         List of search results with title, snippet, and URL
     """
     start_time = time.time()
+    max_retries = 2
+    
     try:
         # Sanitize the query before searching
         clean_query = sanitize_search_query(query)
-        logger.info("query_sanitized", original=query[:100], sanitized=clean_query)
+        logger.info("query_sanitized", 
+                   original=query[:100], 
+                   sanitized=clean_query,
+                   retry_count=retry_count)
         
         params = {
             "q": f"{clean_query} Dataiku",  # Add Dataiku to focus results
@@ -342,7 +372,7 @@ def search_brave(query: str) -> List[Dict[str, Any]]:
             BRAVE_SEARCH_URL,
             headers=BRAVE_HEADERS,
             params=params,
-            timeout=5
+            timeout=8  # Increased timeout for better reliability
         )
         response.raise_for_status()
         
@@ -367,7 +397,18 @@ def search_brave(query: str) -> List[Dict[str, Any]]:
         return results
         
     except requests.exceptions.RequestException as e:
-        logger.error("brave_search_failed", error=str(e), query=query)
+        logger.error("brave_search_failed", 
+                    error=str(e), 
+                    query=query, 
+                    retry_count=retry_count,
+                    error_type=type(e).__name__)
+        
+        # Retry logic for transient errors
+        if retry_count < max_retries and isinstance(e, (requests.exceptions.Timeout, requests.exceptions.ConnectionError)):
+            logger.info("retrying_brave_search", retry_count=retry_count + 1)
+            time.sleep(1 * (retry_count + 1))  # Exponential backoff
+            return search_brave(query, retry_count + 1)
+        
         raise
 
 
@@ -414,15 +455,33 @@ Format your response using Slack mrkdwn formatting for better readability."""
     try:
         logger.info("calling_openai_o4_mini", model="o4-mini", reasoning_effort=REASONING_EFFORT)
         
-        response = openai_client.chat.completions.create(
-            model="o4-mini",  # Using OpenAI's o4-mini reasoning model
-            messages=[
-                {"role": "system", "content": SYSTEM_PROMPT},
-                {"role": "user", "content": user_message}
-            ],
-            max_completion_tokens=1500,  # o4-mini uses max_completion_tokens
-            reasoning_effort=REASONING_EFFORT  # "low", "medium", or "high"
-        )
+        openai_client = get_openai_client()
+        
+        # Retry logic for OpenAI calls
+        max_retries = 2
+        for attempt in range(max_retries + 1):
+            try:
+                response = openai_client.chat.completions.create(
+                    model="o4-mini",  # Using OpenAI's o4-mini reasoning model
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": user_message}
+                    ],
+                    max_completion_tokens=1500,  # o4-mini uses max_completion_tokens
+                    reasoning_effort=REASONING_EFFORT,  # "low", "medium", or "high"
+                    timeout=30  # Add timeout for OpenAI calls
+                )
+                break  # Success, exit retry loop
+            except Exception as retry_error:
+                if attempt < max_retries and "rate_limit" in str(retry_error).lower():
+                    wait_time = (attempt + 1) * 2  # Exponential backoff
+                    logger.warning("openai_rate_limit_retrying", 
+                                 attempt=attempt + 1, 
+                                 wait_time=wait_time)
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise retry_error
         
         answer = response.choices[0].message.content
         
@@ -553,6 +612,12 @@ def format_response_with_sources(answer: str, search_results: List[Dict[str, Any
 # Create Flask app for Cloud Run HTTP requirements
 flask_app = Flask(__name__)
 
+# Initialize thread pool for background processing
+thread_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dataiku-worker")
+
+# Task queue for background processing (in-memory for simplicity)
+task_queue = queue.Queue(maxsize=1000)
+
 @flask_app.route("/health")
 def health_check():
     """Health check endpoint for Cloud Run."""
@@ -574,12 +639,14 @@ def root():
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
     """Handle Slack events via HTTP webhooks (replaces Socket Mode)."""
+    request_start_time = time.time()
     try:
         event_data = request.json
         logger.info("received_slack_event", 
                    event_type=event_data.get("type") if event_data else "no_data",
                    has_event=bool(event_data and event_data.get("event")),
-                   event_subtype=event_data.get("event", {}).get("type") if event_data and event_data.get("event") else "none")
+                   event_subtype=event_data.get("event", {}).get("type") if event_data and event_data.get("event") else "none",
+                   request_start_time=request_start_time)
         
         # Slack sends URL verification challenges
         if event_data and event_data.get("type") == "url_verification":
@@ -595,57 +662,48 @@ def slack_events():
             if event.get("type") == "assistant_thread_started":
                 logger.info("handling_assistant_thread_started", 
                            channel_id=event.get("assistant_thread", {}).get("channel_id"))
-                # Process in background thread for fast response
-                processing_thread = threading.Thread(
-                    target=handle_assistant_thread_started_async,
-                    args=(event,),
-                    daemon=False
-                )
-                processing_thread.start()
+                # Process in background thread pool for fast response
+                thread_pool.submit(handle_assistant_thread_started_async, event)
             elif event.get("type") == "assistant_thread_context_changed":
                 logger.info("handling_assistant_thread_context_changed",
                            channel_id=event.get("assistant_thread", {}).get("channel_id"))
                 # Process context change (lightweight operation)
-                processing_thread = threading.Thread(
-                    target=handle_assistant_thread_context_changed_async,
-                    args=(event,),
-                    daemon=False
-                )
-                processing_thread.start()
+                thread_pool.submit(handle_assistant_thread_context_changed_async, event)
             # Handle app mentions and direct messages
             elif event.get("type") == "app_mention":
                 logger.info("handling_app_mention", text=event.get("text"))
-                # Process in background thread for fast response
-                processing_thread = threading.Thread(
-                    target=handle_app_mention_async,
-                    args=(event,),
-                    daemon=False
-                )
-                processing_thread.start()
+                # Process in background thread pool for fast response
+                thread_pool.submit(handle_app_mention_async, event)
             elif event.get("type") == "message" and event.get("channel_type") == "im":
                 logger.info("handling_direct_message", text=event.get("text"))
-                # Process direct messages in background thread
-                processing_thread = threading.Thread(
-                    target=handle_direct_message_async,
-                    args=(event,),
-                    daemon=False
-                )
-                processing_thread.start()
+                # Process direct messages in background thread pool
+                thread_pool.submit(handle_direct_message_async, event)
             else:
                 logger.info("ignoring_event_type", 
                            event_type=event.get("type"),
                            channel_type=event.get("channel_type"),
                            subtype=event.get("subtype"))
         
-        # Return 200 immediately (required by Slack)
+        # Return 200 immediately (required by Slack) - this is our ACK
+        ack_time = time.time()
+        time_to_ack_ms = int((ack_time - request_start_time) * 1000)
+        logger.info("slack_event_ack_sent", 
+                   time_to_ack_ms=time_to_ack_ms,
+                   background_tasks_queued=True)
         return "", 200
         
     except Exception as e:
-        logger.error("slack_events_error", error=str(e), error_type=type(e).__name__)
+        ack_time = time.time()
+        time_to_ack_ms = int((ack_time - request_start_time) * 1000)
+        logger.error("slack_events_error", 
+                    error=str(e), 
+                    error_type=type(e).__name__,
+                    time_to_ack_ms=time_to_ack_ms)
         return "", 200  # Still return 200 to avoid retries
 
 def handle_app_mention_async(event):
     """Handle app mention events asynchronously."""
+    start_time = time.time()
     try:
         user_query = event.get("text", "").strip()
         channel_id = event.get("channel")
@@ -657,7 +715,10 @@ def handle_app_mention_async(event):
         if not user_query:
             return
             
-        logger.info("processing_app_mention", query=user_query, channel=channel_id)
+        logger.info("processing_app_mention", 
+                   query=user_query, 
+                   channel=channel_id,
+                   processing_start_time=start_time)
         
         # Search and synthesize response with fallback for search failures
         try:
@@ -677,7 +738,7 @@ def handle_app_mention_async(event):
             response = format_response_with_sources(answer, search_results)
         
         # Send response to Slack
-        client = WebClient(token=SLACK_BOT_TOKEN)
+        client = get_slack_client()
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
@@ -687,7 +748,10 @@ def handle_app_mention_async(event):
             unfurl_media=False
         )
         
-        logger.info("app_mention_completed", query=user_query)
+        total_duration = time.time() - start_time
+        logger.info("app_mention_completed", 
+                   query=user_query,
+                   total_duration_ms=int(total_duration * 1000))
         
     except Exception as e:
         logger.error("handle_app_mention_failed", error=str(e), error_type=type(e).__name__)
@@ -695,6 +759,7 @@ def handle_app_mention_async(event):
 
 def handle_direct_message_async(event):
     """Handle direct message events asynchronously."""
+    start_time = time.time()
     try:
         user_query = event.get("text", "").strip()
         channel_id = event.get("channel")
@@ -710,7 +775,8 @@ def handle_direct_message_async(event):
         logger.info("processing_direct_message", 
                    query=user_query, 
                    channel=channel_id,
-                   thread_ts=thread_ts)
+                   thread_ts=thread_ts,
+                   processing_start_time=start_time)
         
         # Set status to show the assistant is working
         if thread_ts:
@@ -738,7 +804,7 @@ def handle_direct_message_async(event):
             response = format_response_with_sources(answer, search_results)
         
         # Send response to Slack (this will clear the status automatically)
-        client = WebClient(token=SLACK_BOT_TOKEN)
+        client = get_slack_client()
         chat_response = client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,  # Ensure proper threading
@@ -758,7 +824,10 @@ def handle_direct_message_async(event):
                 title = user_query[:50] + "..." if len(user_query) > 50 else user_query
                 set_thread_title(channel_id, new_thread_ts, f"Q: {title}")
         
-        logger.info("direct_message_completed", query=user_query)
+        total_duration = time.time() - start_time
+        logger.info("direct_message_completed", 
+                   query=user_query,
+                   total_duration_ms=int(total_duration * 1000))
         
     except Exception as e:
         logger.error("handle_direct_message_failed", error=str(e), error_type=type(e).__name__)
@@ -785,7 +854,7 @@ def handle_assistant_thread_started_async(event):
                    context=context)
         
         # Send welcome message
-        client = WebClient(token=SLACK_BOT_TOKEN)
+        client = get_slack_client()
         client.chat_postMessage(
             channel=channel_id,
             thread_ts=thread_ts,
@@ -856,32 +925,22 @@ def handle_assistant_thread_context_changed_async(event):
                     error_type=type(e).__name__)
 
 
-def run_flask_server():
-    """Run Flask server for Cloud Run HTTP requirements."""
-    try:
-        port = int(os.environ.get("PORT", 8080))
-        logger.info("starting_http_server", port=port, host="0.0.0.0")
-        
-        # Use a production WSGI server instead of Flask's dev server
-        from werkzeug.serving import make_server
-        server = make_server("0.0.0.0", port, flask_app)
-        logger.info("flask_server_ready", port=port)
-        server.serve_forever()
-        
-    except Exception as e:
-        logger.error("flask_server_failed", error=str(e), error_type=type(e).__name__)
-        raise
-
+# For Gunicorn, we need to expose the Flask app as 'application'
+application = flask_app
 
 def main():
-    """Main entry point for the application."""
+    """Main entry point for the application (used when running with Gunicorn)."""
     logger.info("starting_dataiku_agent_http_mode", 
                 bot_token_present=bool(SLACK_BOT_TOKEN))
     
-    # Run Flask server for HTTP webhook mode (much faster than Socket Mode)
-    logger.info("dataiku_agent_starting_http_mode")
-    run_flask_server()
+    # When running with Gunicorn, this won't be called
+    # Gunicorn will directly use the 'application' object above
+    logger.info("dataiku_agent_ready_for_gunicorn")
+    return application
 
 
 if __name__ == "__main__":
-    main() 
+    # This is for development only - production uses Gunicorn
+    logger.warning("running_in_development_mode_use_gunicorn_for_production")
+    port = int(os.environ.get("PORT", 8080))
+    flask_app.run(host="0.0.0.0", port=port, debug=False) 

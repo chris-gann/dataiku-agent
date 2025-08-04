@@ -22,13 +22,15 @@ steps:
       '--platform', 'managed',
       '--allow-unauthenticated',
       '--memory', '1Gi',
-      '--cpu', '2',
+      '--cpu', '1',
+      '--cpu-boost',
+      '--execution-environment', 'gen2',
       '--max-instances', '10',
-      '--min-instances', '1',
-      '--concurrency', '1000',
-      '--timeout', '900',
+      '--min-instances', '2',
+      '--concurrency', '4',
+      '--timeout', '300',
       '--port', '8080',
-      '--set-env-vars', 'LOG_LEVEL=INFO',
+      '--set-env-vars', 'LOG_LEVEL=INFO,WEB_CONCURRENCY=2,THREADS=4',
       '--set-secrets', 'SLACK_BOT_TOKEN=slack-bot-token:latest,OPENAI_API_KEY=openai-api-key:latest,BRAVE_API_KEY=brave-api-key:latest'
     ]
 
