@@ -1,0 +1,684 @@
+"""
+LangGraph-based AI Agent for Dataiku Slack Assistant.
+
+This module implements a sophisticated AI agent using LangGraph that provides
+more intelligent query processing, tool usage, and conversation management
+compared to the original linear approach.
+"""
+
+import os
+import time
+import logging
+from typing import List, Dict, Any, Optional, TypedDict, Annotated
+from datetime import datetime
+import json
+
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, START, END
+from langgraph.graph.state import CompiledStateGraph
+from langgraph.prebuilt import ToolNode
+from langgraph.checkpoint.memory import MemorySaver
+
+import requests
+import structlog
+
+
+# Configure logging
+logger = structlog.get_logger()
+
+# Load environment variables (already loaded in main app)
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
+BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
+REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "medium")
+
+# Brave Search Configuration
+BRAVE_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search"
+BRAVE_HEADERS = {
+    "Accept": "application/json",
+    "X-Subscription-Token": BRAVE_API_KEY
+}
+
+
+class AgentState(TypedDict):
+    """State definition for the LangGraph agent."""
+    query: str
+    original_query: str
+    search_results: List[Dict[str, Any]]
+    processed_results: List[Dict[str, Any]]
+    answer: str
+    confidence_score: float
+    needs_clarification: bool
+    conversation_history: List[Dict[str, Any]]
+    search_attempts: int
+    error_context: Optional[str]
+    final_response: str
+
+
+@tool
+def search_dataiku_brave(query: str) -> Dict[str, Any]:
+    """
+    Search for Dataiku-related information using Brave Search API.
+    
+    Args:
+        query: The search query to execute
+        
+    Returns:
+        Dictionary containing search results and metadata
+    """
+    start_time = time.time()
+    
+    try:
+        # Sanitize query (reuse existing logic)
+        clean_query = _sanitize_search_query(query)
+        logger.info("brave_search_tool_called", 
+                   original_query=query[:100], 
+                   sanitized_query=clean_query)
+        
+        params = {
+            "q": f"{clean_query} Dataiku",
+            "count": 5,
+            "source": "web",
+            "ai": "true"
+        }
+        
+        response = requests.get(
+            BRAVE_SEARCH_URL,
+            headers=BRAVE_HEADERS,
+            params=params,
+            timeout=10
+        )
+        response.raise_for_status()
+        
+        data = response.json()
+        results = []
+        
+        # Extract web results
+        for result in data.get("web", {}).get("results", [])[:5]:
+            results.append({
+                "title": result.get("title", ""),
+                "snippet": result.get("description", ""),
+                "url": result.get("url", ""),
+                "relevance_score": _calculate_relevance_score(result, query)
+            })
+        
+        # Sort by relevance score
+        results.sort(key=lambda x: x.get("relevance_score", 0), reverse=True)
+        
+        duration_ms = int((time.time() - start_time) * 1000)
+        logger.info("brave_search_tool_completed", 
+                   query=query,
+                   result_count=len(results),
+                   duration_ms=duration_ms)
+        
+        return {
+            "success": True,
+            "results": results,
+            "query_used": clean_query,
+            "duration_ms": duration_ms,
+            "total_results": len(results)
+        }
+        
+    except Exception as e:
+        logger.error("brave_search_tool_failed", 
+                    error=str(e), 
+                    query=query,
+                    error_type=type(e).__name__)
+        
+        return {
+            "success": False,
+            "error": str(e),
+            "results": [],
+            "query_used": query,
+            "duration_ms": int((time.time() - start_time) * 1000)
+        }
+
+
+def _sanitize_search_query(query: str) -> str:
+    """Sanitize user query for search API (reused from main app)."""
+    import re
+    
+    # Remove line breaks and replace with spaces
+    cleaned = re.sub(r'\s*\n\s*', ' ', query)
+    
+    # Remove excessive whitespace
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    # Remove special characters that can cause API issues
+    cleaned = re.sub(r'[*#@$%^&(){}[\]|\\:;"\'<>?/+=~`]', ' ', cleaned)
+    
+    # If it's an error message, extract the key parts
+    if "error" in cleaned.lower() or "not allowed" in cleaned.lower():
+        error_keywords = []
+        if "not allowed" in cleaned.lower():
+            error_keywords.append("not allowed")
+        if "prediction" in cleaned.lower():
+            error_keywords.append("prediction models")
+        if "visual machine learning" in cleaned.lower():
+            error_keywords.append("visual machine learning")
+        if "profile" in cleaned.lower():
+            error_keywords.append("user profile permissions")
+            
+        if error_keywords:
+            cleaned = " ".join(error_keywords)
+    
+    # Truncate if too long
+    max_length = 100
+    if len(cleaned) > max_length:
+        cleaned = cleaned[:max_length].rsplit(' ', 1)[0]
+    
+    return cleaned.strip()
+
+
+def _calculate_relevance_score(result: Dict[str, Any], query: str) -> float:
+    """Calculate relevance score for search results."""
+    score = 0.0
+    
+    title = result.get("title", "").lower()
+    snippet = result.get("snippet", "").lower()
+    url = result.get("url", "").lower()
+    query_lower = query.lower()
+    
+    # Check for exact query matches
+    if query_lower in title:
+        score += 3.0
+    if query_lower in snippet:
+        score += 2.0
+    if query_lower in url:
+        score += 1.0
+    
+    # Check for Dataiku domain authority
+    if "dataiku.com" in url:
+        score += 2.0
+    if "doc.dataiku.com" in url:
+        score += 3.0
+    
+    # Check for query word matches
+    query_words = query_lower.split()
+    for word in query_words:
+        if len(word) > 3:  # Skip short words
+            if word in title:
+                score += 0.5
+            if word in snippet:
+                score += 0.3
+    
+    return score
+
+
+# Agent Node Functions
+def analyze_query_node(state: AgentState) -> AgentState:
+    """Analyze the incoming query and determine the best approach."""
+    query = state["query"]
+    
+    logger.info("analyzing_query", query=query[:100])
+    
+    # Simple query classification
+    query_lower = query.lower()
+    
+    # Determine if this needs clarification
+    needs_clarification = False
+    confidence_score = 1.0
+    
+    if len(query.strip()) < 10:
+        needs_clarification = True
+        confidence_score = 0.3
+    elif any(word in query_lower for word in ["help", "what", "how", "why", "explain"]):
+        confidence_score = 0.8
+    elif any(word in query_lower for word in ["error", "problem", "issue", "not working"]):
+        confidence_score = 0.9
+    
+    state["needs_clarification"] = needs_clarification
+    state["confidence_score"] = confidence_score
+    state["search_attempts"] = 0
+    
+    logger.info("query_analysis_completed", 
+               needs_clarification=needs_clarification,
+               confidence_score=confidence_score)
+    
+    return state
+
+
+def search_node(state: AgentState) -> AgentState:
+    """Execute search using the Brave Search tool."""
+    query = state["query"]
+    search_attempts = state.get("search_attempts", 0)
+    
+    logger.info("executing_search", query=query[:100], attempt=search_attempts + 1)
+    
+    # Use the search tool
+    search_result = search_dataiku_brave.invoke({"query": query})
+    
+    state["search_attempts"] = search_attempts + 1
+    
+    if search_result["success"]:
+        state["search_results"] = search_result["results"]
+        state["processed_results"] = search_result["results"]  # For now, same as raw results
+        logger.info("search_completed_successfully", 
+                   result_count=len(search_result["results"]))
+    else:
+        state["search_results"] = []
+        state["processed_results"] = []
+        state["error_context"] = search_result.get("error", "Unknown search error")
+        logger.error("search_failed", error=search_result.get("error"))
+    
+    return state
+
+
+def synthesize_answer_node(state: AgentState) -> AgentState:
+    """Synthesize an answer using OpenAI o4-mini with search results."""
+    query = state["query"]
+    search_results = state.get("search_results", [])
+    
+    logger.info("synthesizing_answer", 
+               query=query[:100],
+               result_count=len(search_results))
+    
+    try:
+        # Initialize OpenAI client
+        llm = ChatOpenAI(
+            model="o4-mini",
+            api_key=OPENAI_API_KEY,
+            model_kwargs={
+                "reasoning_effort": REASONING_EFFORT,
+                "max_completion_tokens": 1500
+            },
+            timeout=30
+        )
+        
+        # Build context from search results
+        context_parts = []
+        for i, result in enumerate(search_results, 1):
+            context_parts.append(f"Result {i}:")
+            context_parts.append(f"Title: {result['title']}")
+            context_parts.append(f"Content: {result['snippet']}")
+            context_parts.append(f"URL: {result['url']}")
+            context_parts.append("")
+        
+        context = "\n".join(context_parts)
+        
+        # Create system prompt
+        system_prompt = """You are a helpful Dataiku expert assistant. You provide accurate, concise answers based on the search results provided.
+
+Format your response using Slack's mrkdwn formatting:
+- Use *bold* for important terms and headings (single asterisks, NOT double)
+- Use _italic_ for emphasis (underscores)
+- Use `code` for technical terms, file names, and UI elements (backticks)
+- Use bullet points with • for lists
+- Use numbered lists when showing steps (1. 2. 3.)
+- Use > for quotes or important notes
+- Keep paragraphs short and scannable
+
+CRITICAL URL RULES:
+- When referencing URLs, you can use numbered references like [1], [2] which will be converted to clickable links
+- ALWAYS use complete URLs from the search results (full https://domain.com/path format)
+- NEVER use partial URLs or relative paths - always complete URLs
+- You can write either "Check out https://doc.dataiku.com" OR "Check out [1]" (if URL 1 is https://doc.dataiku.com)
+- For bold text, use *single asterisks* NOT **double asterisks**
+
+Focus on being helpful, clear, and accurate in your responses about Dataiku's features, capabilities, and usage."""
+        
+        # Create user message
+        user_message = f"""Based on the following search results, please answer this question: {query}
+
+Search Results:
+{context}
+
+Please provide a helpful, accurate answer based on these search results. 
+
+IMPORTANT URL INSTRUCTIONS:
+- When referencing URLs from the search results, you can use either complete URLs OR numbered references like [1], [2]
+- If using numbered references, make sure they correspond to actual URLs from the search results above
+- NEVER use partial URLs like "dataiku.com/product/" - always use complete URLs from search results
+- Numbered references will be automatically converted to clickable Slack hyperlinks
+
+Format your response using Slack mrkdwn formatting for better readability."""
+        
+        messages = [
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=user_message)
+        ]
+        
+        response = llm.invoke(messages)
+        answer = response.content
+        
+        state["answer"] = answer
+        logger.info("answer_synthesis_completed", 
+                   answer_length=len(answer) if answer else 0)
+        
+    except Exception as e:
+        logger.error("synthesis_failed", error=str(e), error_type=type(e).__name__)
+        state["answer"] = ""
+        state["error_context"] = f"Synthesis error: {str(e)}"
+    
+    return state
+
+
+def format_response_node(state: AgentState) -> AgentState:
+    """Format the final response with proper Slack formatting and URL handling."""
+    answer = state.get("answer", "")
+    search_results = state.get("search_results", [])
+    error_context = state.get("error_context")
+    
+    logger.info("formatting_response", 
+               has_answer=bool(answer),
+               has_search_results=bool(search_results),
+               has_error=bool(error_context))
+    
+    if error_context and not answer:
+        # Generate fallback response
+        final_response = _generate_fallback_response(state["original_query"])
+    elif answer:
+        # Format the answer with proper URL handling
+        final_response = _format_response_with_sources(answer, search_results)
+    else:
+        final_response = "I couldn't find any relevant information about your query. Please try rephrasing your question or asking about a different aspect of Dataiku."
+    
+    state["final_response"] = final_response
+    
+    logger.info("response_formatting_completed", 
+               response_length=len(final_response))
+    
+    return state
+
+
+def _generate_fallback_response(query: str) -> str:
+    """Generate intelligent fallback responses for common Dataiku issues."""
+    query_lower = query.lower()
+    
+    # Permission and profile issues
+    if any(phrase in query_lower for phrase in ["not allowed", "permission", "profile", "visual machine learning", "prediction model"]):
+        return """🔒 **Dataiku User Profile & Permissions Issue**
+
+This error occurs when your user profile doesn't have the necessary permissions for Visual Machine Learning features.
+
+**Immediate Solutions:**
+• Contact your Dataiku administrator to request a profile upgrade
+• Ask to be assigned to a group with "Data Scientist" or "ML Practitioner" permissions
+• Check if your organization has Visual ML licenses available
+
+**Profile Types in Dataiku:**
+• **Reader**: Can view projects and dashboards
+• **Analyst**: Can create basic recipes and datasets  
+• **Data Scientist**: Can use Visual ML, code recipes, and advanced features
+• **Admin**: Full platform access
+
+**Common Causes:**
+• License limitations in your Dataiku instance
+• Restrictive user group assignments
+• Organization policy restrictions
+
+💡 **Tip**: Most Visual ML features require "Data Scientist" level permissions or higher."""
+
+    # General fallback
+    else:
+        return f"""🤖 **Dataiku Assistant - Search Temporarily Unavailable**
+
+I'm having trouble searching for specific information about your query right now, but here are some general resources that might help:
+
+**Quick Help:**
+• Check the Dataiku Documentation: https://doc.dataiku.com/
+• Visit Dataiku Community: https://community.dataiku.com/
+• Contact your Dataiku administrator for account-specific issues
+• Try rephrasing your question with more specific terms
+
+**Your Query:** `{query[:200]}{'...' if len(query) > 200 else ''}`
+
+Please try asking again in a few minutes, or contact your Dataiku administrator if this is urgent."""
+
+
+def _format_response_with_sources(answer: str, search_results: List[Dict[str, Any]]) -> str:
+    """Format the response with Slack formatting and numbered URL links."""
+    import re
+    
+    if not answer:
+        return answer
+    
+    # Fix double asterisks to single asterisks for proper Slack bold formatting
+    formatted_answer = re.sub(r'\*\*([^\*]+?)\*\*', r'*\1*', answer)
+    
+    # Convert numbered references to proper Slack hyperlinks using search results
+    formatted_answer = _convert_numbered_refs_to_links(formatted_answer, search_results)
+    
+    # Also handle any remaining plain URLs
+    formatted_answer = _format_urls_as_numbered_links(formatted_answer)
+    
+    return formatted_answer
+
+
+def _convert_numbered_refs_to_links(text: str, search_results: List[Dict[str, Any]]) -> str:
+    """Convert numbered references like [1], [2] to proper Slack hyperlinks."""
+    import re
+    
+    if not search_results:
+        return text
+    
+    # Create mapping of numbers to URLs
+    url_map = {}
+    for i, result in enumerate(search_results, 1):
+        url = result.get('url', '')
+        if url:
+            url_map[i] = url
+    
+    # Pattern to find numbered references like [1], [2], etc.
+    def replace_numbered_ref(match):
+        ref_num = int(match.group(1))
+        if ref_num in url_map:
+            url = url_map[ref_num]
+            return f"<{url}|[{ref_num}]>"
+        else:
+            return match.group(0)
+    
+    return re.sub(r'\[(\d+)\]', replace_numbered_ref, text)
+
+
+def _format_urls_as_numbered_links(text: str) -> str:
+    """Replace URLs in text with numbered Slack-formatted hyperlinks."""
+    import re
+    
+    # Enhanced pattern to match complete URLs (not already in Slack format)
+    url_pattern = r'(?<!<)https?://[^\s<>"\'`|]+(?:\.[a-zA-Z]{2,}|:[0-9]+)[^\s<>"\'`|]*[^\s<>"\'`|.,!?;)](?!\|)'
+    
+    # Find all URLs
+    urls = re.findall(url_pattern, text)
+    
+    if not urls:
+        return text
+    
+    # Remove duplicates while preserving order
+    seen = set()
+    unique_urls = []
+    for url in urls:
+        if url not in seen:
+            seen.add(url)
+            unique_urls.append(url)
+    
+    # Replace each unique URL with a numbered Slack link
+    result = text
+    for i, url in enumerate(unique_urls, 1):
+        slack_link = f"<{url}|[{i}]>"
+        result = result.replace(url, slack_link)
+    
+    return result
+
+
+# Conditional edge functions
+def should_search(state: AgentState) -> str:
+    """Decide whether to search or ask for clarification."""
+    if state.get("needs_clarification", False):
+        return "clarify"
+    return "search"
+
+
+def should_retry_search(state: AgentState) -> str:
+    """Decide whether to retry search or proceed to synthesis."""
+    search_results = state.get("search_results", [])
+    search_attempts = state.get("search_attempts", 0)
+    
+    if len(search_results) == 0 and search_attempts < 2:
+        return "retry_search"
+    return "synthesize"
+
+
+def should_format_response(state: AgentState) -> str:
+    """Always proceed to format response."""
+    return "format"
+
+
+class DataikuAgent:
+    """LangGraph-based Dataiku AI Agent."""
+    
+    def __init__(self):
+        self.memory = MemorySaver()
+        self.graph = self._build_graph()
+        
+    def _build_graph(self) -> CompiledStateGraph:
+        """Build the LangGraph state graph."""
+        # Create the state graph
+        workflow = StateGraph(AgentState)
+        
+        # Add nodes
+        workflow.add_node("analyze", analyze_query_node)
+        workflow.add_node("search", search_node)
+        workflow.add_node("synthesize", synthesize_answer_node)
+        workflow.add_node("format", format_response_node)
+        
+        # Add edges
+        workflow.add_edge(START, "analyze")
+        
+        # Conditional edges
+        workflow.add_conditional_edges(
+            "analyze",
+            should_search,
+            {
+                "search": "search",
+                "clarify": "format"  # Skip to format for clarification
+            }
+        )
+        
+        workflow.add_conditional_edges(
+            "search",
+            should_retry_search,
+            {
+                "retry_search": "search",
+                "synthesize": "synthesize"
+            }
+        )
+        
+        workflow.add_conditional_edges(
+            "synthesize",
+            should_format_response,
+            {
+                "format": "format"
+            }
+        )
+        
+        workflow.add_edge("format", END)
+        
+        # Compile the graph
+        return workflow.compile(checkpointer=self.memory)
+    
+    def process_query(self, query: str, thread_id: str = None) -> str:
+        """
+        Process a user query through the agent workflow.
+        
+        Args:
+            query: The user's question
+            thread_id: Optional thread ID for conversation memory
+            
+        Returns:
+            The formatted response
+        """
+        start_time = time.time()
+        
+        # Prepare initial state
+        initial_state = {
+            "query": query,
+            "original_query": query,
+            "search_results": [],
+            "processed_results": [],
+            "answer": "",
+            "confidence_score": 0.0,
+            "needs_clarification": False,
+            "conversation_history": [],
+            "search_attempts": 0,
+            "error_context": None,
+            "final_response": ""
+        }
+        
+        # Configure run parameters
+        config = {"configurable": {"thread_id": thread_id or "default"}}
+        
+        logger.info("agent_processing_started", 
+                   query=query[:100],
+                   thread_id=thread_id)
+        
+        try:
+            # Run the agent workflow
+            result = self.graph.invoke(initial_state, config=config)
+            
+            final_response = result.get("final_response", "I couldn't process your query.")
+            
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.info("agent_processing_completed", 
+                       query=query[:100],
+                       duration_ms=duration_ms,
+                       response_length=len(final_response))
+            
+            return final_response
+            
+        except Exception as e:
+            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error("agent_processing_failed", 
+                        error=str(e),
+                        error_type=type(e).__name__,
+                        query=query[:100],
+                        duration_ms=duration_ms)
+            
+            # Return fallback response
+            return _generate_fallback_response(query)
+    
+    def stream_query(self, query: str, thread_id: str = None):
+        """
+        Stream the agent processing with intermediate updates.
+        
+        Args:
+            query: The user's question
+            thread_id: Optional thread ID for conversation memory
+            
+        Yields:
+            State updates during processing
+        """
+        initial_state = {
+            "query": query,
+            "original_query": query,
+            "search_results": [],
+            "processed_results": [],
+            "answer": "",
+            "confidence_score": 0.0,
+            "needs_clarification": False,
+            "conversation_history": [],
+            "search_attempts": 0,
+            "error_context": None,
+            "final_response": ""
+        }
+        
+        config = {"configurable": {"thread_id": thread_id or "default"}}
+        
+        try:
+            for chunk in self.graph.stream(initial_state, config=config):
+                yield chunk
+        except Exception as e:
+            logger.error("agent_streaming_failed", error=str(e))
+            yield {"error": str(e)}
+
+
+# Global agent instance
+_agent_instance = None
+
+def get_agent() -> DataikuAgent:
+    """Get or create the global agent instance."""
+    global _agent_instance
+    if _agent_instance is None:
+        _agent_instance = DataikuAgent()
+    return _agent_instance
