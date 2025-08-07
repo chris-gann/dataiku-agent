@@ -1,15 +1,14 @@
 # Google Cloud Build configuration for VM deployment
 steps:
-  # Install dependencies and run tests
+  # Install dependencies and run tests in single step
   - name: 'python:3.11'
-    entrypoint: 'pip'
-    args: ['install', '-r', 'requirements.txt']
-    
-  - name: 'python:3.11'
-    entrypoint: 'python'
-    args: ['-m', 'pytest', 'tests/', '-v']
-    env:
-      - 'PYTHONPATH=/workspace'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        pip install -r requirements.txt
+        export PYTHONPATH=/workspace
+        python -m pytest tests/ -v
     
   # Deploy to VM
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
