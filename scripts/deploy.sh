@@ -20,7 +20,7 @@ git reset --hard origin/main
 
 # Activate virtual environment
 echo "🐍 Activating virtual environment..."
-source venv/bin/activate
+. venv/bin/activate
 
 # Install/update dependencies
 echo "📦 Installing dependencies..."
