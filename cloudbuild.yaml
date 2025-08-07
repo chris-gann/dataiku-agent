@@ -20,7 +20,7 @@ steps:
         gcloud compute ssh dataiku-agent-vm \
           --zone=us-central1-a \
           --ssh-flag="-o StrictHostKeyChecking=no" \
-          --command="cd /opt/dataiku/dataiku_agent && sudo -u dataiku bash /opt/dataiku/deploy.sh"
+          --command="cd /opt/dataiku/dataiku_agent && sudo -u dataiku bash scripts/deploy.sh"
 
 # Options
 options:
