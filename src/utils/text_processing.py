@@ -109,6 +109,18 @@ def convert_numbered_refs_to_links(text: str, search_results: List[Dict[str, Any
         if url:
             url_map[i] = url
     
+    # First, temporarily replace any existing Slack links to avoid double-processing
+    existing_links = []
+    placeholder_pattern = "SLACKLINK_PLACEHOLDER_{}"
+    
+    def store_existing_link(match):
+        index = len(existing_links)
+        existing_links.append(match.group(0))
+        return placeholder_pattern.format(index)
+    
+    # Store existing Slack links
+    text_with_placeholders = re.sub(r'<[^>]+\|[^>]+>', store_existing_link, text)
+    
     # Pattern to find numbered references like [1], [2], etc.
     def replace_numbered_ref(match):
         ref_num = int(match.group(1))
@@ -120,7 +132,11 @@ def convert_numbered_refs_to_links(text: str, search_results: List[Dict[str, Any
             return match.group(0)
     
     # Replace numbered references with Slack hyperlinks
-    result = re.sub(r'\[(\d+)\]', replace_numbered_ref, text)
+    result = re.sub(r'\[(\d+)\]', replace_numbered_ref, text_with_placeholders)
+    
+    # Restore existing Slack links
+    for i, original_link in enumerate(existing_links):
+        result = result.replace(placeholder_pattern.format(i), original_link)
     
     return result
 
@@ -142,10 +158,27 @@ def format_response_with_sources(answer: str, search_results: List[Dict[str, Any
     # Replace **text** with *text* (but not if already single asterisks)
     formatted_answer = re.sub(r'\*\*([^\*]+?)\*\*', r'*\1*', answer)
     
+    # Remove any "References:" section at the bottom and everything after it
+    # This is more aggressive to catch various formats
+    references_split = re.split(r'\n\s*References?\s*:?\s*\n', formatted_answer, flags=re.IGNORECASE)
+    if len(references_split) > 1:
+        # Take only the content before the References section
+        formatted_answer = references_split[0].rstrip()
+    
+    # Also remove trailing reference patterns that might remain
+    formatted_answer = re.sub(r'\n\s*References?\s*:?\s*.*$', '', formatted_answer, flags=re.IGNORECASE | re.DOTALL)
+    
+    # Remove any lingering malformed link patterns at the end
+    formatted_answer = re.sub(r'\n\s*<[^>]*\|[^>]*>\s*<[^>]*\|[^>]*>\s*$', '', formatted_answer)
+    formatted_answer = re.sub(r'\n\s*<[^>]*\|[^>]*>\s*\[[^\]]+\]\s*$', '', formatted_answer)
+    
     # Convert numbered references to proper Slack hyperlinks using search results
     formatted_answer = convert_numbered_refs_to_links(formatted_answer, search_results)
     
     # Also handle any remaining plain URLs
     formatted_answer = format_urls_as_numbered_links(formatted_answer)
+    
+    # Clean up any trailing whitespace
+    formatted_answer = formatted_answer.rstrip()
     
     return formatted_answer
