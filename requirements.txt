@@ -16,4 +16,9 @@ aiohttp==3.9.5
 # Logging
 structlog==24.1.0
 
+# LangGraph for agent workflow
+langgraph>=0.2.50
+langchain-core>=0.3.20
+langchain-openai>=0.2.10
+
 # HTTP mode - no longer need websocket-client 
