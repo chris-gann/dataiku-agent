@@ -1,0 +1,23 @@
+[Unit]
+Description=Dataiku Slack AI Assistant
+After=network.target
+
+[Service]
+Type=simple
+User=dataiku
+Group=dataiku
+WorkingDirectory=/opt/dataiku/dataiku_agent
+Environment=PATH=/opt/dataiku/dataiku_agent/venv/bin
+EnvironmentFile=/opt/dataiku/dataiku_agent/.env
+ExecStart=/opt/dataiku/dataiku_agent/venv/bin/python -m gunicorn --config gunicorn.conf.py src.app:application
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dataiku-agent
+KillMode=mixed
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

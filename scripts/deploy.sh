@@ -1,71 +1,58 @@
 #!/bin/bash
 
-# Deploy script for testing performance optimizations
-# This script deploys the performance branch to Cloud Run for testing
+# VM Deployment script for Dataiku Agent
+# This script is executed on the VM by Cloud Build for automated deployments
 
 set -e
 
-echo "🚀 Deploying Dataiku Agent Performance Optimizations..."
+echo "🚀 Deploying Dataiku Agent to VM..."
 
-# Get the current git branch
-CURRENT_BRANCH=$(git branch --show-current)
-echo "📍 Current branch: $CURRENT_BRANCH"
+# Log deployment start
+logger "dataiku-agent: Starting deployment from git"
 
-if [ "$CURRENT_BRANCH" != "performance" ]; then
-    echo "⚠️  Warning: You're not on the 'performance' branch!"
-    echo "   Current branch: $CURRENT_BRANCH"
-    echo "   Expected branch: performance"
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "❌ Deployment cancelled"
-        exit 1
-    fi
-fi
+# Change to application directory
+cd /opt/dataiku/dataiku_agent
 
-# Check if we have uncommitted changes
-if ! git diff-index --quiet HEAD --; then
-    echo "⚠️  Warning: You have uncommitted changes!"
-    echo "   Please commit your changes before deploying"
-    read -p "Continue anyway? (y/N): " -n 1 -r
-    echo
-    if [[ ! $REPLY =~ ^[Yy]$ ]]; then
-        echo "❌ Deployment cancelled"
-        exit 1
-    fi
-fi
+# Pull latest changes
+echo "📦 Pulling latest code from git..."
+git fetch origin
+git reset --hard origin/main
 
-# Get project ID
-PROJECT_ID=$(gcloud config get-value project 2>/dev/null)
-if [ -z "$PROJECT_ID" ]; then
-    echo "❌ Error: No Google Cloud project configured"
-    echo "   Run: gcloud config set project YOUR_PROJECT_ID"
+# Activate virtual environment
+echo "🐍 Activating virtual environment..."
+source venv/bin/activate
+
+# Install/update dependencies
+echo "📦 Installing dependencies..."
+pip install -r requirements.txt
+
+# Run tests (optional - comment out if you want faster deployments)
+echo "🧪 Running tests..."
+python -m pytest tests/ -v || {
+    echo "⚠️  Tests failed but continuing deployment..."
+    logger "dataiku-agent: Tests failed during deployment"
+}
+
+# Restart the service
+echo "🔄 Restarting dataiku-agent service..."
+sudo systemctl restart dataiku-agent
+
+# Check service status
+echo "🔍 Checking service status..."
+sleep 5
+if sudo systemctl is-active --quiet dataiku-agent; then
+    echo "✅ Service is running successfully!"
+    logger "dataiku-agent: Deployment completed successfully"
+else
+    echo "❌ Service failed to start!"
+    logger "dataiku-agent: Deployment failed - service not running"
+    sudo systemctl status dataiku-agent
     exit 1
 fi
 
-echo "📦 Building and deploying to project: $PROJECT_ID"
-
-# Submit the build
-echo "🔨 Starting Cloud Build..."
-gcloud builds submit --config cloudbuild.yaml
-
-echo "✅ Deployment completed successfully!"
+echo "✅ VM Deployment completed successfully!"
 echo ""
 echo "🔍 Monitoring commands:"
-echo "   View logs:    gcloud logging read 'resource.type=cloud_run_revision AND resource.labels.service_name=dataiku-agent' --limit=50 --format='table(timestamp,textPayload)'"
-echo "   Check status: gcloud run services describe dataiku-agent --region=us-west1"
-echo "   View URL:     gcloud run services describe dataiku-agent --region=us-west1 --format='value(status.url)'"
-echo ""
-echo "📊 Performance testing tips:"
-echo "   1. Check time_to_ack_ms in logs (should be < 1000ms)"
-echo "   2. Monitor total_duration_ms for end-to-end processing"
-echo "   3. Watch for cold start indicators (new instanceId in logs)"
-echo "   4. Test concurrent requests to verify improved throughput"
-echo ""
-echo "🎯 Key improvements in this deployment:"
-echo "   ✓ Gunicorn production server (vs Flask dev server)"
-echo "   ✓ Optimized Cloud Run configuration (concurrency: 4, min-instances: 2)"
-echo "   ✓ Immediate ACK pattern with background processing"
-echo "   ✓ Enhanced performance logging and monitoring"
-echo "   ✓ Optimized Docker image for faster cold starts"
-echo "   ✓ Retry logic for external API calls"
+echo "   Check service: sudo systemctl status dataiku-agent"
+echo "   View logs:     sudo journalctl -u dataiku-agent -f"
+echo "   Check health:  curl http://localhost:8080/health"
