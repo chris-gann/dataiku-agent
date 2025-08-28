@@ -15,6 +15,12 @@ SLACK_BOT_TOKEN = os.environ.get("SLACK_BOT_TOKEN", "").strip()
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "").strip()
 BRAVE_API_KEY = os.environ.get("BRAVE_API_KEY", "").strip()
 
+# Optional Slack OAuth (for public distribution installs)
+SLACK_CLIENT_ID = os.environ.get("SLACK_CLIENT_ID", "").strip()
+SLACK_CLIENT_SECRET = os.environ.get("SLACK_CLIENT_SECRET", "").strip()
+# Optional explicit redirect URI override; if empty we will infer from incoming request
+SLACK_REDIRECT_URI = os.environ.get("SLACK_REDIRECT_URI", "").strip()
+
 # AI Model configuration
 REASONING_EFFORT = os.environ.get("REASONING_EFFORT", "medium")
 

@@ -10,9 +10,10 @@ import queue
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, redirect, url_for, make_response
 
-from .core.config import validate_config, PORT
+from .core.config import validate_config, PORT, SLACK_CLIENT_ID, SLACK_CLIENT_SECRET, SLACK_REDIRECT_URI
+import requests
 from .core.clients import get_logger
 from .handlers.slack_handlers import (
     handle_app_mention_async,
@@ -53,6 +54,62 @@ def root():
         "status": "active",
         "timestamp": datetime.now().isoformat()
     })
+
+@flask_app.route("/slack/oauth_redirect", methods=["GET"])
+def slack_oauth_redirect():
+    """Handle Slack OAuth redirect after user authorizes the app.
+
+    Exchanges the temporary authorization code for an access token using oauth.v2.access.
+    This enables installs for public distribution. Bot token continues to be used for API calls.
+    """
+    try:
+        error = request.args.get("error")
+        if error:
+            # User denied or Slack returned an error
+            html = f"<html><body><h2>Slack OAuth Failed</h2><p>Error: {error}</p></body></html>"
+            return make_response(html, 400)
+
+        code = request.args.get("code")
+        if not code:
+            html = "<html><body><h2>Slack OAuth Failed</h2><p>Missing authorization code.</p></body></html>"
+            return make_response(html, 400)
+
+        if not SLACK_CLIENT_ID or not SLACK_CLIENT_SECRET:
+            html = "<html><body><h2>Slack OAuth Not Configured</h2><p>Missing SLACK_CLIENT_ID or SLACK_CLIENT_SECRET on server.</p></body></html>"
+            return make_response(html, 500)
+
+        # Determine redirect_uri to send back to Slack for verification (must match Slack settings)
+        # Prefer explicit env override, else infer from request host/scheme
+        if SLACK_REDIRECT_URI:
+            redirect_uri = SLACK_REDIRECT_URI
+        else:
+            redirect_uri = f"{request.scheme}://{request.host}/slack/oauth_redirect"
+
+        token_url = "https://slack.com/api/oauth.v2.access"
+        payload = {
+            "client_id": SLACK_CLIENT_ID,
+            "client_secret": SLACK_CLIENT_SECRET,
+            "code": code,
+            "redirect_uri": redirect_uri
+        }
+        response = requests.post(token_url, data=payload, timeout=15)
+        data = response.json() if response.headers.get("content-type", "").startswith("application/json") else {}
+
+        ok = bool(data.get("ok"))
+        if not ok:
+            # Capture safe error fields only
+            error_reason = data.get("error") or "unknown_error"
+            html = f"<html><body><h2>Slack OAuth Failed</h2><p>Error: {error_reason}</p></body></html>"
+            return make_response(html, 400)
+
+        # Optional: you can store installer info (team, enterprise, authed_user) for multi-workspace installs
+        # For now, we acknowledge success with a simple page.
+        html = "<html><body><h2>✅ Slack app installed successfully</h2><p>You can close this window and return to Slack.</p></body></html>"
+        return make_response(html, 200)
+
+    except Exception as e:
+        html = f"<html><body><h2>Slack OAuth Error</h2><p>{str(e)}</p></body></html>"
+        return make_response(html, 500)
 
 @flask_app.route("/slack/events", methods=["POST"])
 def slack_events():
